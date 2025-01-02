@@ -2,28 +2,16 @@ services:
   - type: web
     name: ai16z-agent
     env: node
-    buildCommand: |
-      # Install build dependencies
-      apt-get update && \
-      apt-get install -y python3 make g++ build-essential sqlite3 && \
-      # Clear node_modules and rebuild
-      rm -rf node_modules && \
-      # Install with specific node-gyp settings
-      export npm_config_node_gyp=$(which node-gyp) && \
-      export npm_config_build_from_source=true && \
-      export npm_config_sqlite3_binary_host_mirror=https://github.com/TryGhost/node-sqlite3/releases/download/ && \
-      pnpm install && \
-      pnpm rebuild better-sqlite3 --build-from-source && \
-      pnpm rebuild sqlite3 --build-from-source && \
-      pnpm rebuild bigint-buffer --build-from-source && \
-      pnpm build
+    buildCommand: pnpm install && pnpm build
     startCommand: node dist/index.js
     envVars:
       - key: NODE_VERSION
         value: 23.3.0
-      - key: PYTHON
-        value: python3
-      - key: npm_config_build_from_source
-        value: true
-      - key: npm_config_node_gyp
-        sync: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai16z-db
+          property: connectionString
+
+databases:
+  - name: ai16z-db
+    ipAllowList: []
