@@ -1,5 +1,4 @@
 import { PostgresDatabaseAdapter } from "@ai16z/adapter-postgres";
-import { SqliteDatabaseAdapter } from "@ai16z/adapter-sqlite";
 import { DirectClientInterface } from "@ai16z/client-direct";
 import { AutoClientInterface } from "@ai16z/client-auto";
 import { TelegramClientInterface } from "@ai16z/client-telegram";
@@ -24,7 +23,6 @@ import {
 import { bootstrapPlugin } from "@ai16z/plugin-bootstrap";
 import { solanaPlugin } from "@ai16z/plugin-solana";
 import { nodePlugin } from "@ai16z/plugin-node";
-import Database from "better-sqlite3";
 import fs from "fs";
 import readline from "readline";
 import yargs from "yargs";
