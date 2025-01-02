@@ -1,24 +1,39 @@
-import https from 'https';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 
-const YT_DLP_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+const execAsync = promisify(exec);
 const OUTPUT_DIR = path.join(process.cwd(), 'node_modules', '.bin');
 
-if (!fs.existsSync(OUTPUT_DIR)) {
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+async function downloadYtDlp() {
+  try {
+    // Check if yt-dlp is already installed globally
+    try {
+      await execAsync('yt-dlp --version');
+      console.log('yt-dlp is already installed globally');
+      return;
+    } catch (e) {
+      console.log('yt-dlp not found globally, downloading...');
+    }
+
+    // Create output directory if it doesn't exist
+    if (!fs.existsSync(OUTPUT_DIR)) {
+      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    }
+
+    // Download yt-dlp
+    const downloadUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+    const outputPath = path.join(OUTPUT_DIR, 'yt-dlp');
+    
+    await execAsync(`curl -L ${downloadUrl} -o ${outputPath}`);
+    await execAsync(`chmod a+rx ${outputPath}`);
+    
+    console.log('yt-dlp downloaded and installed successfully');
+  } catch (error) {
+    console.error('Error installing yt-dlp:', error);
+    process.exit(1);
+  }
 }
 
-const file = fs.createWriteStream(path.join(OUTPUT_DIR, 'yt-dlp'));
-
-https.get(YT_DLP_URL, (response) => {
-  response.pipe(file);
-  file.on('finish', () => {
-    file.close();
-    fs.chmodSync(path.join(OUTPUT_DIR, 'yt-dlp'), '755');
-    console.log('yt-dlp downloaded successfully');
-  });
-}).on('error', (err) => {
-  fs.unlink(path.join(OUTPUT_DIR, 'yt-dlp'));
-  console.error('Error downloading yt-dlp:', err.message);
-}); 
+downloadYtDlp(); 
