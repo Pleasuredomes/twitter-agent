@@ -14,6 +14,8 @@ services:
       export npm_config_sqlite3_binary_host_mirror=https://github.com/TryGhost/node-sqlite3/releases/download/ && \
       pnpm install && \
       pnpm rebuild better-sqlite3 --build-from-source && \
+      pnpm rebuild sqlite3 --build-from-source && \
+      pnpm rebuild bigint-buffer --build-from-source && \
       pnpm build
     startCommand: node dist/index.js
     envVars:
@@ -23,3 +25,5 @@ services:
         value: python3
       - key: npm_config_build_from_source
         value: true
+      - key: npm_config_node_gyp
+        sync: true
