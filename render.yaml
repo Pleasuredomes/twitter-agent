@@ -1,11 +1,16 @@
-services:
+ services:
   - type: web
     name: ai16z-agent
     env: node
     buildCommand: |
+      apt-get update && \
+      apt-get install -y python3 make g++ build-essential && \
       pnpm install && \
+      pnpm rebuild better-sqlite3 --build-from-source && \
       pnpm build
     startCommand: node dist/index.js
     envVars:
       - key: NODE_VERSION
         value: 18.19.0
+      - key: PYTHON
+        value: python3
