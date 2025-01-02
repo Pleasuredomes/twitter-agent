@@ -2,7 +2,12 @@ services:
   - type: web
     name: ai16z-agent
     env: node
-    buildCommand: pnpm install && pnpm build
+    buildCommand: |
+      apt-get update && \
+      apt-get install -y python3 python3-pip && \
+      pip3 install yt-dlp && \
+      pnpm install && \
+      pnpm build
     startCommand: node dist/index.js
     envVars:
       - key: NODE_VERSION
