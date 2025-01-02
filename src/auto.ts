@@ -19,7 +19,6 @@ import {
   validateCharacterConfig,
 } from "@ai16z/eliza";
 import { bootstrapPlugin } from "@ai16z/plugin-bootstrap";
-import { nodePlugin } from "@ai16z/plugin-node";
 import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
@@ -92,7 +91,7 @@ function createAgent(
     modelProvider: character.modelProvider,
     evaluators: [],
     character,
-    plugins: [bootstrapPlugin, nodePlugin].filter(Boolean),
+    plugins: [bootstrapPlugin].filter(Boolean),
     providers: [],
     actions: [],
     services: [],
