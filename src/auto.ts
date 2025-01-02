@@ -61,31 +61,10 @@ interface ExtendedRuntime extends AgentRuntime {
 }
 
 function initializeDatabase(dataDir: string) {
-  if (process.env.POSTGRES_URL) {
-    const db = new PostgresDatabaseAdapter({
-      connectionString: process.env.POSTGRES_URL,
-    });
-    return db;
-  } else {
-    // Ensure data directory exists and is writable
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true, mode: 0o755 });
-    }
-    
-    const filePath = process.env.SQLITE_FILE ?? path.resolve(dataDir, "db.sqlite");
-    
-    // Ensure the database file exists and is writable
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, "", { mode: 0o644 });
-    }
-    
-    const db = new SqliteDatabaseAdapter(new Database(filePath, { 
-      verbose: console.log,
-      fileMustExist: false,
-      timeout: 5000,
-    }));
-    return db;
-  }
+  const db = new PostgresDatabaseAdapter({
+    connectionString: process.env.DATABASE_URL
+  });
+  return db;
 }
 
 async function initializeClients(
