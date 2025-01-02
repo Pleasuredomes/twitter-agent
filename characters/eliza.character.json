@@ -2,7 +2,7 @@
   "name": "Eliza",
   "plugins": [],
   "clients": ["twitter"],
-  "modelProvider": "openrouter",
+  "modelProvider": "grok",
   "settings": {
     "secrets": {},
     "voice": {
