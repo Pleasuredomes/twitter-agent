@@ -2,7 +2,12 @@ services:
   - type: web
     name: ai16z-agent
     env: node
-    buildCommand: pnpm install && pnpm build
+    buildCommand: |
+      apt-get update
+      apt-get install -y build-essential python3
+      pnpm install
+      pnpm rebuild
+      pnpm build
     startCommand: node dist/index.js
     envVars:
       - key: NODE_VERSION
@@ -11,6 +16,12 @@ services:
         fromDatabase:
           name: ai16z-db
           property: connectionString
+    buildFilter:
+      paths:
+      - src/**
+      - package.json
+      - pnpm-lock.yaml
+      - tsconfig.json
 
 databases:
   - name: ai16z-db
