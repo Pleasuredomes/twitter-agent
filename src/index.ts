@@ -144,10 +144,10 @@ export function getTokenForProvider(
 }
 
 function initializeDatabase(dataDir: string) {
-  // Use /tmp for Render deployment
-  const dbPath = process.env.RENDER ? '/tmp/db.sqlite' : path.join(dataDir, 'db.sqlite');
-  
-  const db = new Database(dbPath);
+  // Use PostgreSQL instead of SQLite
+  const db = new PostgresDatabaseAdapter({
+    connectionString: process.env.DATABASE_URL
+  });
   return db;
 }
 
