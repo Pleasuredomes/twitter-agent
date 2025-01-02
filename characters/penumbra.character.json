@@ -1,7 +1,7 @@
 {
     "name": "UmbraAI",
     "modelProvider": "openai",
-    "clients": ["twitter"],
+    "clients": [],
     "settings": {
       "secrets": {},
       "voice": {
