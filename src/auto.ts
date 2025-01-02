@@ -26,7 +26,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { character } from "./character.ts";
 import type { DirectClient } from "@ai16z/client-direct";
-import type { AutoClient } from "@ai16z/client-auto";
 import yargs from "yargs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,20 +65,13 @@ function initializeDatabase(dataDir: string) {
   return db;
 }
 
-async function initializeClients(
+function initializeClients(
   character: Character,
   runtime: IAgentRuntime
 ) {
   const clients = [];
   const clientTypes = character.clients?.map((str) => str.toLowerCase()) || [];
-
-  if (clientTypes.includes("auto")) {
-    const autoClient = await AutoClientInterface.start(runtime);
-    if (autoClient) {
-      clients.push(autoClient);
-    }
-  }
-
+  
   return clients;
 }
 
