@@ -5,7 +5,8 @@ services:
     buildCommand: |
       curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
       chmod a+rx /usr/local/bin/yt-dlp && \
-      pnpm install && \
+      pnpm install --ignore-scripts && \
+      pnpm rebuild better-sqlite3 && \
       pnpm build
     startCommand: node dist/index.js
     envVars:
