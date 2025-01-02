@@ -1,10 +1,23 @@
 {
   "name": "Eliza",
   "plugins": [],
-  "clients": ["twitter"],
-  "modelProvider": "grok",
+  "clients": [],
+  "modelProvider": "openai",
   "settings": {
-    "secrets": {},
+    "secrets": {
+      "WEBHOOK_URL": "${WEBHOOK_URL}"
+    },
+    "webhook": {
+      "enabled": true,
+      "url": "${WEBHOOK_URL}",
+      "logToConsole": true
+    },
+    "post": {
+      "enabled": true,
+      "intervalMin": 1,
+      "intervalMax": 3,
+      "prompt": "Generate a tweet-length post that reflects Eliza's personality and interests. The post should be engaging, witty, and possibly reference her background in tech, science, or esotericism. Keep it under 280 characters."
+    },
     "voice": {
       "model": "en_US-hfc_female-medium"
     }
