@@ -82,191 +82,342 @@ interface TwitterPost {
   generateNewTweet(): Promise<void>;
 }
 
-class LocalTwitterClient {
-  private runtime: IAgentRuntime;
-  private twitterClient: any;
-  profile: any;
-  private lastCheckedTweetId: number | null = null;
-  private processedTweets: Set<string> = new Set();
+class TwitterPostClient {
+  client: any;
+  runtime: IAgentRuntime;
 
-  constructor(runtime: IAgentRuntime) {
+  constructor(client: any, runtime: IAgentRuntime) {
+    this.client = client;
     this.runtime = runtime;
   }
 
-  async init() {
-    try {
-      elizaLogger.info("🔄 Initializing local Twitter client...");
-      
-      // Initialize the base Twitter client
-      const twitterManager = await TwitterClientInterface.start(this.runtime);
-      this.twitterClient = twitterManager.client;
-      this.profile = this.twitterClient.profile;
-
-      elizaLogger.success("✅ Twitter client initialized with profile:", {
-        username: this.profile?.username,
-        id: this.profile?.id
-      });
-
-      return this;
-    } catch (error) {
-      elizaLogger.error("❌ Failed to initialize Twitter client:", error);
-      throw error;
+  async start(postImmediately = false) {
+    if (!this.client.profile) {
+      await this.client.init();
     }
-  }
 
-  async fetchSearchTweets(query: string, count: number) {
-    return await this.twitterClient.fetchSearchTweets(query, count);
-  }
+    const generateNewTweetLoop = async () => {
+      const lastPost = await this.runtime.cacheManager.get(
+        "twitter/" + this.runtime.getSetting("TWITTER_USERNAME") + "/lastPost"
+      );
+      const lastPostTimestamp = (lastPost as { timestamp: number })?.timestamp ?? 0;
+      const minMinutes = parseInt(this.runtime.getSetting("POST_INTERVAL_MIN")) || 90;
+      const maxMinutes = parseInt(this.runtime.getSetting("POST_INTERVAL_MAX")) || 180;
+      const randomMinutes = Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) + minMinutes;
+      const delay = randomMinutes * 60 * 1000;
 
-  async fetchReplies() {
-    return await this.twitterClient.fetchReplies();
-  }
-
-  async fetchDirectMessages() {
-    return await this.twitterClient.fetchDirectMessages();
-  }
-
-  async sendTweet(text: string, replyToId?: string) {
-    return await this.twitterClient.sendTweet(text, replyToId);
-  }
-
-  async sendDirectMessage(userId: string, text: string) {
-    return await this.twitterClient.sendDirectMessage(userId, text);
-  }
-}
-
-class LocalTwitterHandler {
-  private client: LocalTwitterClient;
-  private runtime: IAgentRuntime;
-  private processedTweets: Set<string> = new Set();
-
-  constructor(runtime: IAgentRuntime) {
-    this.runtime = runtime;
-    this.client = new LocalTwitterClient(runtime);
-  }
-
-  async start() {
-    await this.client.init();
-    this.startMonitoring();
-  }
-
-  private startMonitoring() {
-    elizaLogger.info("🚀 Starting Twitter monitoring...");
-    this.checkInteractions();
-  }
-
-  private async checkInteractions() {
-    const monitor = async () => {
-      try {
-        await this.checkNewTweets();
-      } catch (error) {
-        elizaLogger.error("❌ Error in monitoring cycle:", error);
+      if (Date.now() > lastPostTimestamp + delay) {
+        await this.generateNewTweet();
       }
-      // Schedule next check
-      setTimeout(monitor, 30000);
+
+      setTimeout(() => {
+        generateNewTweetLoop();
+      }, delay);
+
+      elizaLogger.log(`Next tweet scheduled in ${randomMinutes} minutes`);
     };
 
-    // Start monitoring
-    monitor();
-  }
-
-  private async checkNewTweets() {
-    try {
-      const username = this.client.profile?.username;
-      if (!username) return;
-
-      // Fetch mentions
-      const mentions = await this.client.fetchSearchTweets(`@${username}`, 20);
-      if (mentions?.length > 0) {
-        for (const tweet of mentions) {
-          if (this.processedTweets.has(tweet.id)) continue;
-          
-          elizaLogger.info("🔍 New Tweet found", tweet.permanentUrl);
-          
-          // Log and send to webhook
-          await this.sendToWebhook('tweet_found', {
-            id: tweet.id,
-            url: tweet.permanentUrl,
-            text: tweet.text,
-            author: tweet.author?.username,
-            timestamp: new Date().toISOString()
-          });
-
-          elizaLogger.info("⚙️ Processing Tweet:", tweet.id);
-          
-          // Process the tweet
-          await this.processTweet(tweet);
-          
-          this.processedTweets.add(tweet.id);
-        }
-      }
-    } catch (error) {
-      elizaLogger.error("❌ Error checking new tweets:", error);
+    if (postImmediately) {
+      await this.generateNewTweet();
     }
+    generateNewTweetLoop();
   }
 
-  private async processTweet(tweet: any) {
+  async generateNewTweet() {
+    elizaLogger.log("Generating new tweet");
     try {
-      // Send processing status to webhook
-      await this.sendToWebhook('tweet_processing', {
-        id: tweet.id,
-        status: 'started',
-        timestamp: new Date().toISOString()
+      const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: this.runtime.character.settings?.post?.prompt || "Generate a post",
+          userId: 'system',
+          userName: 'System',
+          roomId: this.runtime.character.id
+        })
       });
 
-      // Query knowledge
-      const query = `${tweet.author?.username} ${tweet.text}`;
-      elizaLogger.info("🧠 Querying knowledge for:", query);
-      
-      await this.sendToWebhook('knowledge_query', {
-        tweet_id: tweet.id,
-        query,
-        timestamp: new Date().toISOString()
-      });
-
-      // Generate response
-      elizaLogger.info("💭 Generating response...");
-      const response = await this.generateResponse(tweet);
-
-      if (response) {
-        // Log the response
-        elizaLogger.info("✨ Generated response:", response);
-        
-        // Send to webhook
-        await this.sendToWebhook('response_generated', {
-          tweet_id: tweet.id,
-          original_tweet: tweet,
-          response: {
-            text: response,
-            timestamp: new Date().toISOString()
-          }
-        });
-
-        // Send the actual tweet
-        if (!process.env.TWITTER_DRY_RUN) {
-          await this.client.sendTweet(response, tweet.id);
-          elizaLogger.success("✅ Response tweet sent");
-        }
-      } else {
-        elizaLogger.info("⏭️ Not responding to message");
-        await this.sendToWebhook('response_skipped', {
-          tweet_id: tweet.id,
-          reason: 'No response generated',
-          timestamp: new Date().toISOString()
-        });
+      if (!response.ok) {
+        throw new Error(`Failed to generate tweet: ${await response.text()}`);
       }
 
+      const data = await response.json();
+      const content = data[0]?.text;
+
+      if (!content) {
+        elizaLogger.error("No content generated for tweet");
+        return;
+      }
+
+      elizaLogger.success("📝 Generated post:", content);
+
+      // Send to webhook before posting
+      await this.sendToWebhook('post_generated', {
+        text: content,
+        character: this.runtime.character.name,
+        timestamp: new Date().toISOString(),
+        type: 'scheduled_post'
+      });
+
+      if (this.runtime.getSetting("TWITTER_DRY_RUN") === "true") {
+        elizaLogger.info(`Dry run: would have posted tweet: ${content}`);
+        return;
+      }
+
+      // Post the tweet
+      const result = await this.client.requestQueue.add(
+        async () => await this.client.twitterClient.sendTweet(content)
+      );
+
+      const body = await result.json();
+      const tweetResult = body.data.create_tweet.tweet_results.result;
+      
+      // Send successful post to webhook
+      await this.sendToWebhook('post_sent', {
+        text: content,
+        tweet_id: tweetResult.rest_id,
+        url: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${tweetResult.rest_id}`,
+        timestamp: new Date().toISOString()
+      });
+
+      elizaLogger.success(`Tweet posted: https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${tweetResult.rest_id}`);
+
     } catch (error) {
-      elizaLogger.error("❌ Error processing tweet:", error);
-      await this.sendToWebhook('processing_error', {
-        tweet_id: tweet.id,
+      elizaLogger.error("Error generating/sending tweet:", error);
+      
+      // Send error to webhook
+      await this.sendToWebhook('post_error', {
         error: error instanceof Error ? error.message : 'Unknown error',
         timestamp: new Date().toISOString()
       });
     }
   }
 
-  private async generateResponse(tweet: any): Promise<string | null> {
+  private async sendToWebhook(type: string, data: any) {
+    const webhookUrl = process.env.WEBHOOK_URL;
+    if (!webhookUrl) {
+      elizaLogger.warn("⚠️ No webhook URL configured");
+      return;
+    }
+
+    const payload = {
+      event: `twitter_${type}`,
+      data: {
+        ...data,
+        processed_at: new Date().toISOString()
+      }
+    };
+
+    elizaLogger.info('🌐 Attempting to send to webhook:', webhookUrl);
+    elizaLogger.info('📦 Webhook payload:', JSON.stringify(payload, null, 2));
+
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+      }
+
+      elizaLogger.success(`✅ Successfully sent ${type} to webhook`);
+    } catch (error) {
+      elizaLogger.error("❌ Webhook error:", error);
+    }
+  }
+}
+
+class TwitterInteractionClient {
+  client: any;
+  runtime: IAgentRuntime;
+  private processedTweets: Set<string> = new Set();
+
+  constructor(client: any, runtime: IAgentRuntime) {
+    this.client = client;
+    this.runtime = runtime;
+  }
+
+  async start() {
+    const handleTwitterInteractionsLoop = () => {
+      this.handleTwitterInteractions();
+      setTimeout(
+        handleTwitterInteractionsLoop,
+        (Math.floor(Math.random() * (5 - 2 + 1)) + 2) * 60 * 1000
+      );
+    };
+    handleTwitterInteractionsLoop();
+  }
+
+  async handleTwitterInteractions() {
+    elizaLogger.log("Checking Twitter interactions");
+    const twitterUsername = this.client.profile.username;
+    
+    try {
+      const tweetCandidates = (await this.client.fetchSearchTweets(
+        `@${twitterUsername}`,
+        20
+      )).tweets;
+
+      const uniqueTweetCandidates = [...new Set(tweetCandidates)]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .filter((tweet) => tweet.userId !== this.client.profile.id);
+
+      for (const tweet of uniqueTweetCandidates) {
+        if (!this.client.lastCheckedTweetId || parseInt(tweet.id) > this.client.lastCheckedTweetId) {
+          elizaLogger.log("New Tweet found", tweet.permanentUrl);
+          
+          // Send tweet found to webhook
+          await this.sendToWebhook('tweet_found', {
+            id: tweet.id,
+            url: tweet.permanentUrl,
+            text: tweet.text,
+            author: tweet.username,
+            timestamp: new Date().toISOString()
+          });
+
+          const roomId = stringToUuid(tweet.conversationId + "-" + this.runtime.agentId);
+          const userIdUUID = tweet.userId === this.client.profile.id ? 
+            this.runtime.agentId : 
+            stringToUuid(tweet.userId);
+
+          await this.runtime.ensureConnection(
+            userIdUUID,
+            roomId,
+            tweet.username,
+            tweet.name,
+            "twitter"
+          );
+
+          const thread = await this.buildConversationThread(tweet);
+          
+          // Send thread to webhook
+          await this.sendToWebhook('conversation_thread', {
+            tweet_id: tweet.id,
+            thread: thread.map(t => ({
+              id: t.id,
+              text: t.text,
+              author: t.username,
+              timestamp: t.timestamp
+            })),
+            timestamp: new Date().toISOString()
+          });
+
+          const message = {
+            content: { text: tweet.text },
+            agentId: this.runtime.agentId,
+            userId: userIdUUID,
+            roomId
+          };
+
+          await this.handleTweet({
+            tweet,
+            message,
+            thread
+          });
+
+          this.client.lastCheckedTweetId = parseInt(tweet.id);
+        }
+      }
+
+      await this.client.cacheLatestCheckedTweetId();
+      elizaLogger.log("Finished checking Twitter interactions");
+    } catch (error) {
+      elizaLogger.error("Error handling Twitter interactions:", error);
+      
+      // Send error to webhook
+      await this.sendToWebhook('interaction_error', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+
+  async handleTweet({ tweet, message, thread }: any) {
+    if (tweet.userId === this.client.profile.id) return;
+
+    if (!message.content.text) {
+      elizaLogger.log("Skipping Tweet with no text", tweet.id);
+      return { text: "", action: "IGNORE" };
+    }
+
+    elizaLogger.log("Processing Tweet:", tweet.id);
+    
+    // Send processing status to webhook
+    await this.sendToWebhook('tweet_processing', {
+      id: tweet.id,
+      status: 'started',
+      timestamp: new Date().toISOString()
+    });
+
+    // Query knowledge
+    const query = `${tweet.username} ${tweet.text}`;
+    elizaLogger.info("Querying knowledge for:", query);
+    
+    await this.sendToWebhook('knowledge_query', {
+      tweet_id: tweet.id,
+      query,
+      timestamp: new Date().toISOString()
+    });
+
+    // Generate response
+    const response = await this.generateResponse(tweet, thread);
+    
+    if (response.action !== "RESPOND") {
+      elizaLogger.log("Not responding to message");
+      
+      await this.sendToWebhook('response_skipped', {
+        tweet_id: tweet.id,
+        reason: response.action,
+        timestamp: new Date().toISOString()
+      });
+      
+      return response;
+    }
+
+    if (response.text) {
+      try {
+        // Send to webhook before posting
+        await this.sendToWebhook('response_generated', {
+          tweet_id: tweet.id,
+          original_tweet: tweet,
+          response: {
+            text: response.text,
+            timestamp: new Date().toISOString()
+          }
+        });
+
+        // Send the tweet
+        const result = await this.client.requestQueue.add(
+          async () => await this.client.twitterClient.sendTweet(response.text, tweet.id)
+        );
+
+        const body = await result.json();
+        const tweetResult = body.data.create_tweet.tweet_results.result;
+        
+        // Send successful response to webhook
+        await this.sendToWebhook('response_sent', {
+          original_tweet_id: tweet.id,
+          response_tweet_id: tweetResult.rest_id,
+          url: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${tweetResult.rest_id}`,
+          timestamp: new Date().toISOString()
+        });
+
+      } catch (error) {
+        elizaLogger.error(`Error sending response tweet: ${error}`);
+        
+        // Send error to webhook
+        await this.sendToWebhook('response_error', {
+          tweet_id: tweet.id,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+  }
+
+  private async generateResponse(tweet: any, thread: any[]): Promise<any> {
     try {
       const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/message`, {
         method: 'POST',
@@ -275,7 +426,14 @@ class LocalTwitterHandler {
           text: tweet.text,
           userId: tweet.author?.id,
           userName: tweet.author?.username,
-          roomId: 'twitter'
+          roomId: 'twitter',
+          context: {
+            thread: thread.map(t => ({
+              text: t.text,
+              author: t.username,
+              timestamp: t.timestamp
+            }))
+          }
         })
       });
 
@@ -284,17 +442,20 @@ class LocalTwitterHandler {
       }
 
       const data = await response.json();
-      return data[0]?.text || null;
+      return {
+        text: data[0]?.text,
+        action: data[0]?.action || "IGNORE"
+      };
     } catch (error) {
-      elizaLogger.error('❌ Error generating response:', error);
-      return null;
+      elizaLogger.error('Error generating response:', error);
+      return { text: "", action: "IGNORE" };
     }
   }
 
   private async sendToWebhook(type: string, data: any) {
-    const webhookUrl = this.getWebhookUrl(type);
+    const webhookUrl = process.env.WEBHOOK_URL;
     if (!webhookUrl) {
-      elizaLogger.warn("⚠️ No webhook URL configured for type:", type);
+      elizaLogger.warn("⚠️ No webhook URL configured");
       return;
     }
 
@@ -333,17 +494,54 @@ class LocalTwitterHandler {
     }
   }
 
-  private getWebhookUrl(type: string): string | undefined {
-    const typeSpecificUrl = {
-      tweet_found: process.env.WEBHOOK_URL_TWEETS,
-      tweet_processing: process.env.WEBHOOK_URL_TWEETS,
-      knowledge_query: process.env.WEBHOOK_URL_TWEETS,
-      response_generated: process.env.WEBHOOK_URL_TWEETS,
-      response_skipped: process.env.WEBHOOK_URL_TWEETS,
-      processing_error: process.env.WEBHOOK_URL_TWEETS
-    }[type];
+  async buildConversationThread(tweet: any, maxReplies = 10) {
+    const thread = [];
+    const visited = new Set();
 
-    return typeSpecificUrl || process.env.WEBHOOK_URL;
+    const processThread = async (currentTweet: any, depth = 0) => {
+      if (!currentTweet || depth >= maxReplies || visited.has(currentTweet.id)) {
+        return;
+      }
+
+      visited.add(currentTweet.id);
+      thread.unshift(currentTweet);
+
+      if (currentTweet.inReplyToStatusId) {
+        try {
+          const parentTweet = await this.client.twitterClient.getTweet(
+            currentTweet.inReplyToStatusId
+          );
+          if (parentTweet) {
+            await processThread(parentTweet, depth + 1);
+          }
+        } catch (error) {
+          elizaLogger.error("Error fetching parent tweet:", error);
+        }
+      }
+    };
+
+    await processThread(tweet);
+    return thread;
+  }
+}
+
+class TwitterManager {
+  client: any;
+  post: TwitterPostClient;
+  interaction: TwitterInteractionClient;
+
+  constructor(runtime: IAgentRuntime) {
+    this.client = new ClientBase(runtime);
+    this.post = new TwitterPostClient(this.client, runtime);
+    this.interaction = new TwitterInteractionClient(this.client, runtime);
+  }
+
+  static async start(runtime: IAgentRuntime) {
+    const manager = new TwitterManager(runtime);
+    await manager.client.init();
+    await manager.post.start();
+    await manager.interaction.start();
+    return manager;
   }
 }
 
@@ -368,8 +566,7 @@ async function initializeClients(
       });
 
       // Create our local Twitter handler
-      const twitterHandler = new LocalTwitterHandler(runtime);
-      await twitterHandler.start();
+      const twitterHandler = await TwitterManager.start(runtime);
 
       clients.push(twitterHandler);
       elizaLogger.success("✅ Local Twitter handler initialized successfully");
@@ -514,7 +711,7 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
     directClient.registerAgent(runtime);
     
     // Start monitoring Twitter interactions immediately
-    new MonitorOnlyTwitterManager(runtime);
+    await TwitterManager.start(runtime);
     
     // Separate post generation timing using environment variables
     const startPostGeneration = () => {
