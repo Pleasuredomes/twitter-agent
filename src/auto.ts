@@ -167,17 +167,21 @@ async function initializeClients(
   runtime: IAgentRuntime
 ) {
   const clients = [];
+  const clientTypes = character.clients?.map((str) => str.toLowerCase()) || [];
   
-  try {
-    // Initialize custom Twitter manager
-    const twitterManager = new MonitorOnlyTwitterManager(runtime);
-    await twitterManager.client.init();
-    await twitterManager.interaction.start();
-    
-    elizaLogger.success("Twitter client initialized in monitoring mode");
-    clients.push(twitterManager);
-  } catch (error) {
-    elizaLogger.error("Failed to initialize Twitter client:", error);
+  elizaLogger.info("Initializing clients for:", clientTypes);
+
+  if (clientTypes.includes("twitter")) {
+    try {
+      elizaLogger.info("Starting Twitter client...");
+      const twitterClient = await TwitterClientInterface.start(runtime);
+      if (twitterClient) {
+        elizaLogger.success("Twitter client initialized successfully");
+        clients.push(twitterClient);
+      }
+    } catch (error) {
+      elizaLogger.error("Failed to initialize Twitter client:", error);
+    }
   }
 
   return clients;
