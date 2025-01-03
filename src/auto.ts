@@ -82,6 +82,52 @@ interface TwitterPost {
   generateNewTweet(): Promise<void>;
 }
 
+async function sendToWebhook(payload: any, webhookUrl: string, runtime: ExtendedRuntime) {
+  elizaLogger.info("🌐 Sending to webhook:", {
+    url: webhookUrl,
+    event: payload.event,
+    type: payload.type || 'unspecified'
+  });
+
+  elizaLogger.info("📦 Full payload:", JSON.stringify(payload, null, 2));
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const responseText = await response.text();
+    elizaLogger.info(`📥 Webhook response (${response.status}):`, responseText || "(empty response)");
+
+    if (!response.ok) {
+      throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+    }
+
+    elizaLogger.success(`✅ Successfully sent ${payload.event} to webhook`);
+    
+    // Log to console if enabled in settings
+    if (runtime.character.settings?.webhook?.logToConsole) {
+      console.log('\n=== WEBHOOK EVENT ===');
+      console.log('Event:', payload.event);
+      console.log('Type:', payload.type);
+      console.log('Data:', JSON.stringify(payload.data, null, 2));
+      console.log('Response:', responseText);
+      console.log('===================\n');
+    }
+
+    return response;
+  } catch (error) {
+    elizaLogger.error("❌ Webhook error:", {
+      event: payload.event,
+      type: payload.type,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+    throw error;
+  }
+}
+
 class MonitorOnlyTwitterManager {
   interaction: TwitterInteraction;
   client: any;
@@ -141,76 +187,6 @@ class MonitorOnlyTwitterManager {
     }
   }
 
-  private async startMonitoring() {
-    elizaLogger.info("🔄 Starting Twitter monitoring...");
-    
-    // Separate interval for interaction monitoring (every 30 seconds)
-    const interactionInterval = setInterval(async () => {
-      if (!this.client || !this.client.profile) {
-        elizaLogger.error("⚠️ Twitter client not ready yet");
-        return;
-      }
-
-      const twitterUsername = this.client.profile?.username;
-      elizaLogger.info(`👀 Checking Twitter interactions for @${twitterUsername}...`);
-
-      try {
-        // Monitor mentions (every 30 seconds)
-        if (this.client.fetchSearchTweets) {
-          elizaLogger.info("🔍 Checking mentions...");
-          const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
-          elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
-          if (mentions?.length > 0) {
-            for (const mention of mentions) {
-              await this.handleInteraction('mention', mention);
-            }
-          }
-        }
-
-        // Monitor DMs (every 30 seconds)
-        if (this.client.fetchDirectMessages) {
-          elizaLogger.info("🔍 Checking DMs...");
-          const messages = await this.client.fetchDirectMessages();
-          elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
-          if (messages?.length > 0) {
-            for (const message of messages) {
-              await this.handleInteraction('dm', message);
-            }
-          }
-        }
-
-        // Monitor replies (every 30 seconds)
-        if (this.client.fetchReplies) {
-          elizaLogger.info("🔍 Checking replies...");
-          const replies = await this.client.fetchReplies();
-          elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
-          if (replies?.length > 0) {
-            for (const reply of replies) {
-              await this.handleInteraction('reply', reply);
-            }
-          }
-        }
-
-      } catch (error) {
-        elizaLogger.error("❌ Error in Twitter monitoring:", error);
-        if (error instanceof Error) {
-          elizaLogger.error("Error details:", {
-            name: error.name,
-            message: error.message,
-            stack: error.stack
-          });
-        }
-      }
-    }, 30000); // Check interactions every 30 seconds
-
-    // Clean up on process exit
-    process.on('SIGINT', () => {
-      clearInterval(interactionInterval);
-      elizaLogger.info("🛑 Stopping Twitter monitoring...");
-      process.exit(0);
-    });
-  }
-
   private async handleInteraction(type: 'mention' | 'dm' | 'reply', interaction: any) {
     try {
       const interactionId = `${type}-${interaction.id}`;
@@ -221,135 +197,74 @@ class MonitorOnlyTwitterManager {
 
       this.processedInteractions.add(interactionId);
 
-      // Get webhook URL
-      const webhookUrl = this.getWebhookUrl(type);
+      if (!this.runtime.character.settings?.webhook?.enabled) {
+        elizaLogger.warn("⚠️ Webhook not configured for this character");
+        return;
+      }
+
+      const webhookUrl = this.runtime.character.settings.webhook.url;
       if (!webhookUrl) {
         elizaLogger.error("❌ No webhook URL configured");
         return;
       }
 
-      // Send incoming interaction event
-      const incomingPayload = {
-        event: "twitter_interaction_received",
+      // Log incoming interaction
+      await sendToWebhook({
+        event: "interaction_received",
+        type: type,
         data: {
           text: interaction.text || interaction.message,
           author: interaction.author?.username || interaction.sender?.username,
-          url: `https://twitter.com/${interaction.author?.username}/status/${interaction.id}`,
           timestamp: new Date().toISOString(),
+          interaction_id: interaction.id,
+          character: this.runtime.character.name
+        }
+      }, webhookUrl, this.runtime);
+
+      // Generate and log response
+      const generatedResponse = await this.generateResponse(interaction);
+      if (generatedResponse) {
+        await sendToWebhook({
+          event: "response_generated",
           type: type,
-          tweet_id: interaction.id
-        }
-      };
-
-      await this.sendToWebhook(incomingPayload, webhookUrl);
-
-      // Generate and send response
-      const response = await this.generateResponse(interaction);
-      if (response) {
-        const responsePayload = {
-          event: "twitter_response_generated",
           data: {
-            text: response,
-            author: this.client.profile?.username,
-            timestamp: new Date().toISOString(),
-            type: "response",
+            text: generatedResponse,
+            character: this.runtime.character.name,
             in_reply_to: interaction.id,
-            original_interaction: incomingPayload.data
+            timestamp: new Date().toISOString(),
+            original_text: interaction.text || interaction.message
           }
-        };
-
-        await this.sendToWebhook(responsePayload, webhookUrl);
-
-        // Send the reply on Twitter
-        if (this.client.reply) {
-          await this.client.reply(interaction.id, response);
-          
-          // Send confirmation of tweet posted
-          const confirmationPayload = {
-            event: "twitter_response_posted",
-            data: {
-              ...responsePayload.data,
-              status: "posted"
-            }
-          };
-          await this.sendToWebhook(confirmationPayload, webhookUrl);
-        }
+        }, webhookUrl, this.runtime);
       }
 
     } catch (error) {
-      elizaLogger.error("❌ Error in handleInteraction:", {
-        type,
-        id: interaction.id,
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  private getWebhookUrl(type: 'mention' | 'dm' | 'reply'): string | undefined {
-    const url = {
-      mention: process.env.WEBHOOK_URL_MENTIONS,
-      dm: process.env.WEBHOOK_URL_DMS,
-      reply: process.env.WEBHOOK_URL_REPLIES
-    }[type];
-
-    if (!url) {
-      elizaLogger.warn(`⚠️ No webhook URL configured for ${type}, using default webhook`);
-      return process.env.WEBHOOK_URL;
-    }
-
-    elizaLogger.info(`🎯 Using webhook URL for ${type}: ${url}`);
-    return url;
-  }
-
-  private async sendToWebhook(payload: any, webhookUrl: string) {
-    if (!webhookUrl) {
-      elizaLogger.warn("⚠️ No webhook URL provided");
-      return;
-    }
-
-    elizaLogger.info(`🌐 Sending to webhook:`, {
-      url: webhookUrl,
-      event: payload.event,
-      type: payload.data?.type
-    });
-
-    elizaLogger.info("📦 Full payload:", JSON.stringify(payload, null, 2));
-
-    try {
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const responseText = await response.text();
-      elizaLogger.info(`📥 Webhook response (${response.status}):`, responseText || "(empty response)");
-
-      if (!response.ok) {
-        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+      elizaLogger.error("❌ Error handling interaction:", error);
+      
+      if (this.runtime.character.settings?.webhook?.enabled && this.runtime.character.settings.webhook.url) {
+        await sendToWebhook({
+          event: "interaction_error",
+          type: type,
+          data: {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            interaction_id: interaction.id,
+            character: this.runtime.character.name,
+            timestamp: new Date().toISOString()
+          }
+        }, this.runtime.character.settings.webhook.url, this.runtime);
       }
-
-      elizaLogger.success(`✅ Successfully sent ${payload.event} to webhook`);
-    } catch (error) {
-      elizaLogger.error("❌ Webhook error:", {
-        event: payload.event,
-        type: payload.data?.type,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-      throw error;
     }
   }
 
   private async generateResponse(interaction: any): Promise<string> {
-    // Use the runtime's message generation capability
     try {
-      const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/message`, {
+      const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/${this.runtime.character.name}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: interaction.content,
-          userId: interaction.from,
-          userName: interaction.from,
+          text: interaction.text || interaction.message,
+          userId: interaction.author?.id || 'unknown',
+          userName: interaction.author?.username || 'unknown',
           roomId: 'twitter'
         })
       });
@@ -364,6 +279,41 @@ class MonitorOnlyTwitterManager {
       elizaLogger.error('Error generating response:', error);
       throw error;
     }
+  }
+
+  private startMonitoring() {
+    elizaLogger.info("🔄 Starting monitoring for interactions...");
+    
+    // Check for interactions every 30 seconds
+    setInterval(async () => {
+      if (!this.runtime.character.settings?.webhook?.enabled) {
+        return;
+      }
+
+      try {
+        // Simulate checking for different types of interactions
+        await this.handleInteraction('mention', {
+          id: Date.now(),
+          text: "Simulated mention",
+          author: { username: "user" }
+        });
+
+        await this.handleInteraction('dm', {
+          id: Date.now(),
+          message: "Simulated DM",
+          sender: { username: "user" }
+        });
+
+        await this.handleInteraction('reply', {
+          id: Date.now(),
+          text: "Simulated reply",
+          author: { username: "user" }
+        });
+
+      } catch (error) {
+        elizaLogger.error("❌ Error in monitoring cycle:", error);
+      }
+    }, 30000);
   }
 }
 
@@ -471,32 +421,29 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
   try {
     elizaLogger.info("🎲 Starting post generation process...");
     
-    const serverPort = process.env.SERVER_PORT || '3000';
-    const webhookUrl = process.env.WEBHOOK_URL;
-    
+    if (!runtime.character.settings?.webhook?.enabled) {
+      elizaLogger.warn("⚠️ Webhook not configured for this character");
+      return;
+    }
+
+    const webhookUrl = runtime.character.settings.webhook.url;
     if (!webhookUrl) {
       elizaLogger.error("❌ No webhook URL configured");
       return;
     }
 
-    // Send generation start event
-    const startPayload = {
-      event: "twitter_post_generation_started",
+    // Log start of generation
+    await sendToWebhook({
+      event: "post_generation_started",
+      type: "post",
       data: {
         character: runtime.character.name,
-        timestamp: new Date().toISOString(),
-        type: 'scheduled_post'
+        timestamp: new Date().toISOString()
       }
-    };
-    
-    await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(startPayload)
-    });
+    }, webhookUrl, runtime);
 
     // Generate post
-    const response = await fetch(`http://localhost:${serverPort}/${runtime.character.name}/message`, {
+    const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/${runtime.character.name}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -508,19 +455,16 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
     });
 
     if (!response.ok) {
-      const errorPayload = {
-        event: "twitter_post_generation_failed",
+      const error = await response.text();
+      await sendToWebhook({
+        event: "post_generation_failed",
+        type: "post",
         data: {
-          error: await response.text(),
-          timestamp: new Date().toISOString(),
-          character: runtime.character.name
+          error,
+          character: runtime.character.name,
+          timestamp: new Date().toISOString()
         }
-      };
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(errorPayload)
-      });
+      }, webhookUrl, runtime);
       return;
     }
 
@@ -528,58 +472,43 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
     const post = data[0]?.text;
 
     if (!post) {
-      const errorPayload = {
-        event: "twitter_post_generation_failed",
+      await sendToWebhook({
+        event: "post_generation_failed",
+        type: "post",
         data: {
           error: "No post was generated",
-          timestamp: new Date().toISOString(),
-          character: runtime.character.name
+          character: runtime.character.name,
+          timestamp: new Date().toISOString()
         }
-      };
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(errorPayload)
-      });
+      }, webhookUrl, runtime);
       return;
     }
 
-    // Send successful generation event
-    const generatedPayload = {
-      event: 'twitter_post_generated',
+    // Log successful generation
+    await sendToWebhook({
+      event: "post_generated",
+      type: "post",
       data: {
         text: post,
         character: runtime.character.name,
-        timestamp: new Date().toISOString(),
-        type: 'scheduled_post'
+        timestamp: new Date().toISOString()
       }
-    };
-    
-    await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(generatedPayload)
-    });
+    }, webhookUrl, runtime);
 
   } catch (error) {
     elizaLogger.error("❌ Error in post generation process:", error);
     
-    // Send error event to webhook
-    if (process.env.WEBHOOK_URL) {
-      const errorPayload = {
-        event: "twitter_post_generation_error",
+    if (runtime.character.settings?.webhook?.enabled && runtime.character.settings.webhook.url) {
+      await sendToWebhook({
+        event: "post_generation_error",
+        type: "post",
         data: {
           error: error instanceof Error ? error.message : String(error),
-          timestamp: new Date().toISOString(),
-          character: runtime.character.name
+          stack: error instanceof Error ? error.stack : undefined,
+          character: runtime.character.name,
+          timestamp: new Date().toISOString()
         }
-      };
-      
-      await fetch(process.env.WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(errorPayload)
-      });
+      }, runtime.character.settings.webhook.url, runtime);
     }
   }
 }
