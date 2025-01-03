@@ -120,33 +120,45 @@ class MonitorOnlyTwitterManager {
 
           try {
             // Monitor mentions
+            elizaLogger.info(`Checking mentions for @${twitterUsername}...`);
             const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
+            elizaLogger.info(`Found ${mentions.tweets?.length || 0} mentions`);
             for (const tweet of mentions.tweets) {
               if (tweet.userId !== this.client.profile.id) {
+                elizaLogger.info(`Processing mention: ${tweet.text}`);
                 await this.handleTweet({...tweet, type: 'mention'});
               }
             }
 
             // Monitor DMs
+            elizaLogger.info("Checking DMs...");
             const messages = await this.client.fetchDirectMessages();
+            elizaLogger.info(`Found ${messages?.length || 0} DMs`);
             for (const dm of messages) {
               if (dm.senderId !== this.client.profile.id) {
+                elizaLogger.info(`Processing DM: ${dm.text}`);
                 await this.handleTweet({...dm, type: 'dm'});
               }
             }
 
-            // Monitor replies to our tweets
+            // Monitor replies
+            elizaLogger.info("Checking replies...");
             const replies = await this.client.fetchReplies();
+            elizaLogger.info(`Found ${replies?.length || 0} replies`);
             for (const reply of replies) {
               if (reply.userId !== this.client.profile.id) {
+                elizaLogger.info(`Processing reply: ${reply.text}`);
                 await this.handleTweet({...reply, type: 'reply'});
               }
             }
 
           } catch (error) {
             elizaLogger.error("Error monitoring Twitter:", error);
+            elizaLogger.error("Error details:", error);
           }
         }, 60000); // Check every minute
+
+        elizaLogger.info("Twitter monitoring started successfully");
 
         // Clean up on process exit
         process.on('SIGINT', () => {
