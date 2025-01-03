@@ -101,14 +101,33 @@ class MonitorOnlyTwitterManager {
     try {
       elizaLogger.info("🔄 Attempting to initialize Twitter client...");
       
-      // Log credentials being used (safely)
+      // Verify credentials before starting
+      if (!process.env.TWITTER_USERNAME || !process.env.TWITTER_PASSWORD || !process.env.TWITTER_EMAIL) {
+        throw new Error("Missing Twitter credentials in environment");
+      }
+      
       elizaLogger.info("🔑 Using Twitter credentials:", {
         username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
         email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
         password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
       });
+
+      // Initialize Twitter client with explicit credentials
+      this.client = await TwitterClientInterface.start({
+        ...runtime,
+        credentials: {
+          username: process.env.TWITTER_USERNAME,
+          password: process.env.TWITTER_PASSWORD,
+          email: process.env.TWITTER_EMAIL
+        }
+      });
       
-      this.client = await TwitterClientInterface.start(runtime);
+      // Wait for profile to be available
+      let retries = 0;
+      while (!this.client?.profile && retries < 5) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        retries++;
+      }
       
       if (this.client?.profile) {
         elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
@@ -118,7 +137,7 @@ class MonitorOnlyTwitterManager {
         this.isInitialized = true;
         this.startMonitoring();
       } else {
-        throw new Error("Twitter client initialized but profile is missing");
+        throw new Error("Failed to get Twitter profile after initialization");
       }
     } catch (error) {
       elizaLogger.error("❌ Failed to initialize Twitter client:", {
