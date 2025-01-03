@@ -101,33 +101,14 @@ class MonitorOnlyTwitterManager {
     try {
       elizaLogger.info("🔄 Attempting to initialize Twitter client...");
       
-      // Verify credentials before starting
-      if (!process.env.TWITTER_USERNAME || !process.env.TWITTER_PASSWORD || !process.env.TWITTER_EMAIL) {
-        throw new Error("Missing Twitter credentials in environment");
-      }
-      
+      // Log credentials being used (safely)
       elizaLogger.info("🔑 Using Twitter credentials:", {
         username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
         email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
         password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
       });
-
-      // Initialize Twitter client with explicit credentials
-      this.client = await TwitterClientInterface.start({
-        ...runtime,
-        credentials: {
-          username: process.env.TWITTER_USERNAME,
-          password: process.env.TWITTER_PASSWORD,
-          email: process.env.TWITTER_EMAIL
-        }
-      });
       
-      // Wait for profile to be available
-      let retries = 0;
-      while (!this.client?.profile && retries < 5) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        retries++;
-      }
+      this.client = await TwitterClientInterface.start(runtime);
       
       if (this.client?.profile) {
         elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
@@ -137,7 +118,7 @@ class MonitorOnlyTwitterManager {
         this.isInitialized = true;
         this.startMonitoring();
       } else {
-        throw new Error("Failed to get Twitter profile after initialization");
+        throw new Error("Twitter client initialized but profile is missing");
       }
     } catch (error) {
       elizaLogger.error("❌ Failed to initialize Twitter client:", {
@@ -238,19 +219,18 @@ class MonitorOnlyTwitterManager {
         return;
       }
 
-      // Mark as processed immediately to prevent duplicates
       this.processedInteractions.add(interactionId);
 
-      // Get webhook URL from environment
-      const webhookUrl = process.env.WEBHOOK_URL;
+      // Get webhook URL
+      const webhookUrl = this.getWebhookUrl(type);
       if (!webhookUrl) {
-        elizaLogger.error("❌ No webhook URL configured in environment");
+        elizaLogger.error("❌ No webhook URL configured");
         return;
       }
 
-      // 1. Send incoming tweet event
-      const tweetPayload = {
-        event: "twitter_post_generated", // Keep consistent with existing format
+      // Send incoming interaction event
+      const incomingPayload = {
+        event: "twitter_interaction_received",
         data: {
           text: interaction.text || interaction.message,
           author: interaction.author?.username || interaction.sender?.username,
@@ -261,38 +241,38 @@ class MonitorOnlyTwitterManager {
         }
       };
 
-      // Send tweet to webhook
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(tweetPayload)
-      });
+      await this.sendToWebhook(incomingPayload, webhookUrl);
 
-      // 2. Generate and send response
+      // Generate and send response
       const response = await this.generateResponse(interaction);
       if (response) {
         const responsePayload = {
-          event: "twitter_post_generated",
+          event: "twitter_response_generated",
           data: {
             text: response,
             author: this.client.profile?.username,
             timestamp: new Date().toISOString(),
             type: "response",
             in_reply_to: interaction.id,
-            original_tweet: tweetPayload.data
+            original_interaction: incomingPayload.data
           }
         };
 
-        // Send response to webhook
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(responsePayload)
-        });
+        await this.sendToWebhook(responsePayload, webhookUrl);
 
-        // Actually send the reply on Twitter
+        // Send the reply on Twitter
         if (this.client.reply) {
           await this.client.reply(interaction.id, response);
+          
+          // Send confirmation of tweet posted
+          const confirmationPayload = {
+            event: "twitter_response_posted",
+            data: {
+              ...responsePayload.data,
+              status: "posted"
+            }
+          };
+          await this.sendToWebhook(confirmationPayload, webhookUrl);
         }
       }
 
@@ -492,9 +472,30 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
     elizaLogger.info("🎲 Starting post generation process...");
     
     const serverPort = process.env.SERVER_PORT || '3000';
-    elizaLogger.info(`🌐 Using server port: ${serverPort}`);
+    const webhookUrl = process.env.WEBHOOK_URL;
     
-    // Generate a post using the runtime's message generation
+    if (!webhookUrl) {
+      elizaLogger.error("❌ No webhook URL configured");
+      return;
+    }
+
+    // Send generation start event
+    const startPayload = {
+      event: "twitter_post_generation_started",
+      data: {
+        character: runtime.character.name,
+        timestamp: new Date().toISOString(),
+        type: 'scheduled_post'
+      }
+    };
+    
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(startPayload)
+    });
+
+    // Generate post
     const response = await fetch(`http://localhost:${serverPort}/${runtime.character.name}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -507,7 +508,19 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
     });
 
     if (!response.ok) {
-      elizaLogger.error("❌ Failed to generate post:", await response.text());
+      const errorPayload = {
+        event: "twitter_post_generation_failed",
+        data: {
+          error: await response.text(),
+          timestamp: new Date().toISOString(),
+          character: runtime.character.name
+        }
+      };
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(errorPayload)
+      });
       return;
     }
 
@@ -515,43 +528,57 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
     const post = data[0]?.text;
 
     if (!post) {
-      elizaLogger.error("❌ No post was generated");
-      return;
-    }
-
-    // Log the generated post
-    elizaLogger.success("📝 Generated post:", post);
-
-    // Send to post webhook
-    const webhookUrl = process.env.WEBHOOK_URL; // Use default webhook for posts
-    if (webhookUrl) {
-      elizaLogger.info(`🌐 Attempting to send post to webhook: ${webhookUrl}`);
-      
-      const payload = {
-        event: 'twitter_post_generated',
+      const errorPayload = {
+        event: "twitter_post_generation_failed",
         data: {
-          text: post,
-          character: runtime.character.name,
+          error: "No post was generated",
           timestamp: new Date().toISOString(),
-          type: 'scheduled_post'
+          character: runtime.character.name
         }
       };
-      
-      elizaLogger.info("📦 Post webhook payload:", JSON.stringify(payload, null, 2));
-      
       await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(errorPayload)
       });
+      return;
     }
+
+    // Send successful generation event
+    const generatedPayload = {
+      event: 'twitter_post_generated',
+      data: {
+        text: post,
+        character: runtime.character.name,
+        timestamp: new Date().toISOString(),
+        type: 'scheduled_post'
+      }
+    };
+    
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(generatedPayload)
+    });
+
   } catch (error) {
     elizaLogger.error("❌ Error in post generation process:", error);
-    if (error instanceof Error) {
-      elizaLogger.error("Error details:", {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
+    
+    // Send error event to webhook
+    if (process.env.WEBHOOK_URL) {
+      const errorPayload = {
+        event: "twitter_post_generation_error",
+        data: {
+          error: error instanceof Error ? error.message : String(error),
+          timestamp: new Date().toISOString(),
+          character: runtime.character.name
+        }
+      };
+      
+      await fetch(process.env.WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(errorPayload)
       });
     }
   }
