@@ -220,64 +220,51 @@ class MonitorOnlyTwitterManager {
     }
 
     try {
-      // Prepare interaction data
-      const interactionData = {
-        type,
-        timestamp: new Date().toISOString(),
-        from: interaction.author?.username || interaction.sender?.username,
-        content: interaction.text || interaction.message,
-        id: interaction.id,
-        url: interaction.url || `https://x.com/${interaction.author?.username}/status/${interaction.id}`,
-        raw: interaction
-      };
+      // Get the appropriate webhook URL based on interaction type
+      const webhookUrl = {
+        mention: process.env.WEBHOOK_URL_MENTIONS,
+        dm: process.env.WEBHOOK_URL_DMS,
+        reply: process.env.WEBHOOK_URL_REPLIES || process.env.WEBHOOK_URL // Fallback to default
+      }[type];
 
-      // Send incoming tweet to webhook
-      const webhookUrl = process.env.WEBHOOK_URL;
-      if (webhookUrl) {
-        elizaLogger.info("📥 Sending incoming tweet to webhook:", {
-          tweet: interactionData.content,
-          url: interactionData.url
-        });
-
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'twitter_incoming_tweet',
-            data: interactionData
-          })
-        });
+      if (!webhookUrl) {
+        elizaLogger.warn(`⚠️ No webhook URL configured for ${type}`);
+        return;
       }
 
-      // Generate response
-      const response = await this.generateResponse(interactionData);
-      
-      if (response) {
-        // Send our response to webhook
-        elizaLogger.info("📤 Sending our response to webhook:", { response });
-        
-        await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            event: 'twitter_outgoing_response',
-            data: {
-              originalTweet: interactionData,
-              response: {
-                content: response,
-                timestamp: new Date().toISOString()
-              }
-            }
-          })
-        });
+      // Prepare and send interaction data
+      const tweetData = {
+        type,
+        tweet: {
+          id: interaction.id,
+          text: interaction.text || interaction.message,
+          author: interaction.author?.username || interaction.sender?.username,
+          url: `https://twitter.com/${interaction.author?.username}/status/${interaction.id}`,
+          timestamp: interaction.created_at
+        },
+        response: await this.generateResponse(interaction)
+      };
 
-        // Send response to Twitter
-        await this.client.reply(interaction.id, response);
+      elizaLogger.info(`📤 Sending ${type} to webhook:`, {
+        url: webhookUrl,
+        data: JSON.stringify(tweetData, null, 2)
+      });
+
+      const webhookResponse = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tweetData)
+      });
+
+      if (webhookResponse.ok) {
+        elizaLogger.success(`✅ Successfully sent ${type} to webhook`);
         this.processedInteractions.add(interactionId);
+      } else {
+        elizaLogger.error(`❌ Failed to send ${type} to webhook:`, await webhookResponse.text());
       }
 
     } catch (error) {
-      elizaLogger.error("❌ Error handling tweet:", error);
+      elizaLogger.error(`❌ Error handling ${type}:`, error);
     }
   }
 
