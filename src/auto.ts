@@ -285,6 +285,12 @@ class MonitorOnlyTwitterManager {
 
     try {
         elizaLogger.info("🚀 Sending webhook request...");
+        elizaLogger.info("📦 Webhook payload:", {
+            event: payload.event,
+            data: payload.data,
+            url: webhookUrl,
+            timestamp: new Date().toISOString()
+        });
         
         const response = await fetch(webhookUrl, {
             method: 'POST',
@@ -301,6 +307,8 @@ class MonitorOnlyTwitterManager {
             });
             throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
         }
+
+        elizaLogger.success("✅ Webhook sent successfully");
 
     } catch (error) {
         elizaLogger.error("❌ Error sending to webhook:", error);
