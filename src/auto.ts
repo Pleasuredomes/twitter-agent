@@ -108,22 +108,30 @@ class MonitorOnlyTwitterManager {
         password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
       });
       
-      const twitterClient = await TwitterClientInterface.start(runtime) as typeof Client;
+      const twitterClient = await TwitterClientInterface.start(runtime);
       this.client = twitterClient;
+
+      // Wait for profile to be loaded
+      let retries = 0;
+      while (!this.client.profile && retries < 10) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        retries++;
+      }
       
-      if ((twitterClient as any).profile) {
+      if (this.client.profile) {
         elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
-          username: (twitterClient as any).profile.username,
-          id: (twitterClient as any).profile.id
+          username: this.client.profile.username,
+          id: this.client.profile.id
         });
         this.isInitialized = true;
         
-        // Set up event listeners for Twitter interactions
-        this.setupEventListeners(twitterClient);
+        // Set up event listeners
+        this.setupEventListeners();
         
+        // Start monitoring
         this.startMonitoring();
       } else {
-        throw new Error("Twitter client initialized but profile is missing");
+        throw new Error("Twitter client initialized but profile is missing after waiting");
       }
     } catch (error) {
       elizaLogger.error("❌ Failed to initialize Twitter client:", {
@@ -146,96 +154,71 @@ class MonitorOnlyTwitterManager {
     }
   }
 
-  private setupEventListeners(twitterClient: any) {
-    // Listen for tweet discovery
-    twitterClient.on('tweet:found', async (data: any) => {
-      elizaLogger.info('🔍 New Tweet found:', data.url);
-      elizaLogger.info('📦 Tweet data:', {
-        id: data.id,
-        url: data.url,
-        text: data.text
-      });
-      await this.handleInteraction('tweet_found', {
-        id: data.id,
-        url: data.url,
-        text: data.text,
+  private setupEventListeners() {
+    if (!this.client) {
+      elizaLogger.error("Cannot setup listeners - client not initialized");
+      return;
+    }
+
+    // Listen for tweet saving events
+    this.client.addListener('tweet:save', async (tweet: any) => {
+      elizaLogger.info('💾 Saving Tweet:', tweet.id);
+      await this.handleInteraction('tweet_save', {
+        id: tweet.id,
+        text: tweet.text,
         timestamp: new Date().toISOString()
       });
     });
 
-    // Listen for tweet processing
-    twitterClient.on('tweet:processing', async (data: any) => {
-      const tweetId = typeof data === 'string' ? data : data.id;
+    // Listen for client events
+    this.client.addListener('client:started', () => {
+      elizaLogger.info('🚀 Twitter client started');
+    });
+
+    this.client.addListener('client:ready', (profile: any) => {
+      elizaLogger.info('✅ Twitter client ready:', profile);
+    });
+
+    // Listen for interaction events
+    this.client.addListener('interaction:mention', async (mention: any) => {
+      elizaLogger.info('📨 Mention received:', mention);
+      await this.handleInteraction('mention', mention);
+    });
+
+    this.client.addListener('interaction:reply', async (reply: any) => {
+      elizaLogger.info('↩️ Reply received:', reply);
+      await this.handleInteraction('reply', reply);
+    });
+
+    this.client.addListener('interaction:dm', async (dm: any) => {
+      elizaLogger.info('📩 DM received:', dm);
+      await this.handleInteraction('dm', dm);
+    });
+
+    // Listen for tweet events
+    this.client.addListener('tweet:found', async (tweet: any) => {
+      elizaLogger.info('🔍 New Tweet found:', tweet.url);
+      await this.handleInteraction('tweet_found', tweet);
+    });
+
+    this.client.addListener('tweet:processing', async (tweetId: string) => {
       elizaLogger.info('⚙️ Processing Tweet:', tweetId);
-      elizaLogger.info('📦 Processing data:', { tweetId });
-      await this.handleInteraction('tweet_processing', {
-        id: tweetId,
-        timestamp: new Date().toISOString()
-      });
+      await this.handleInteraction('tweet_processing', { id: tweetId });
     });
 
-    // Listen for knowledge querying
-    twitterClient.on('knowledge:querying', async (data: any) => {
-      elizaLogger.info('🧠 Querying knowledge:', data);
-      await this.handleInteraction('knowledge_querying', {
-        query: data,
-        timestamp: new Date().toISOString()
-      });
+    // Listen for generation events
+    this.client.addListener('generation:start', async (data: any) => {
+      elizaLogger.info('🎯 Starting generation:', data);
+      await this.handleInteraction('generation_start', data);
     });
 
-    // Listen for text generation
-    twitterClient.on('text:generating', async (data: any) => {
-      elizaLogger.info('💭 Generating text');
-      await this.handleInteraction('text_generating', {
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Listen for message response generation
-    twitterClient.on('message:generating', async (data: any) => {
-      elizaLogger.info('💬 Generating message response');
-      await this.handleInteraction('message_generating', {
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Listen for action evaluation
-    twitterClient.on('action:evaluating', async (data: any) => {
-      elizaLogger.info('⚖️ Evaluating action:', data);
-      await this.handleInteraction('action_evaluating', {
-        action: data,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Listen for action normalization
-    twitterClient.on('action:normalized', async (data: any) => {
-      elizaLogger.info('✓ Normalized action:', data);
-      await this.handleInteraction('action_normalized', {
-        action: data,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Listen for action execution
-    twitterClient.on('action:executing', async (data: any) => {
-      elizaLogger.info('⚡ Executing action:', data);
-      await this.handleInteraction('action_executing', {
-        action: data,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Listen for interaction completion
-    twitterClient.on('interaction:finished', async () => {
-      elizaLogger.info('✅ Finished checking Twitter interactions');
-      await this.handleInteraction('interaction_finished', {
-        timestamp: new Date().toISOString()
-      });
+    this.client.addListener('generation:complete', async (data: any) => {
+      elizaLogger.info('✨ Generation complete:', data);
+      await this.handleInteraction('generation_complete', data);
     });
 
     // Listen for errors
-    twitterClient.on('error', (error: any) => {
+    this.client.addListener('error', (error: any) => {
       elizaLogger.error('❌ Twitter client error:', error);
       this.sendToWebhook({
         event: 'twitter_error',
@@ -433,15 +416,14 @@ class MonitorOnlyTwitterManager {
 
   private getWebhookUrl(type: string): string | undefined {
     const typeSpecificUrl = {
+      tweet_save: process.env.WEBHOOK_URL_TWEETS,
       tweet_found: process.env.WEBHOOK_URL_TWEETS,
       tweet_processing: process.env.WEBHOOK_URL_TWEETS,
-      knowledge_querying: process.env.WEBHOOK_URL_TWEETS,
-      text_generating: process.env.WEBHOOK_URL_TWEETS,
-      message_generating: process.env.WEBHOOK_URL_TWEETS,
-      action_evaluating: process.env.WEBHOOK_URL_TWEETS,
-      action_normalized: process.env.WEBHOOK_URL_TWEETS,
-      action_executing: process.env.WEBHOOK_URL_TWEETS,
-      interaction_finished: process.env.WEBHOOK_URL_TWEETS,
+      mention: process.env.WEBHOOK_URL_MENTIONS,
+      reply: process.env.WEBHOOK_URL_REPLIES,
+      dm: process.env.WEBHOOK_URL_DMS,
+      generation_start: process.env.WEBHOOK_URL_TWEETS,
+      generation_complete: process.env.WEBHOOK_URL_TWEETS,
       error: process.env.WEBHOOK_URL
     }[type];
 
