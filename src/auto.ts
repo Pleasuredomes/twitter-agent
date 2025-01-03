@@ -87,33 +87,40 @@ class MonitorOnlyTwitterManager {
   client: any;
 
   constructor(runtime: IAgentRuntime) {
-    elizaLogger.info("Initializing Twitter monitoring manager...");
+    elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
     
     // Use the static start method and ensure client is initialized
     TwitterClientInterface.start(runtime).then((client: any) => {
-      elizaLogger.info("Twitter client initialized with profile:", client.profile);
+      elizaLogger.info("✅ Twitter client initialized with profile:", {
+        username: client?.profile?.username,
+        id: client?.profile?.id
+      });
       this.client = client;
       this.startMonitoring();  // Only start monitoring after client is ready
     }).catch(error => {
-      elizaLogger.error("Failed to initialize Twitter client:", error);
+      elizaLogger.error("❌ Failed to initialize Twitter client:", error);
     });
   }
 
   private async startMonitoring() {
-    elizaLogger.info("Starting Twitter monitoring...");
-    const checkInterval = setInterval(async () => {
+    elizaLogger.info("🔄 Starting Twitter monitoring...");
+    
+    // Separate interval for interaction monitoring (every 30 seconds)
+    const interactionInterval = setInterval(async () => {
       if (!this.client || !this.client.profile) {
-        elizaLogger.error("Twitter client not ready yet");
+        elizaLogger.error("⚠️ Twitter client not ready yet");
         return;
       }
 
       const twitterUsername = this.client.profile?.username;
-      elizaLogger.info(`Checking Twitter interactions for @${twitterUsername}...`);
+      elizaLogger.info(`👀 Checking Twitter interactions for @${twitterUsername}...`);
 
       try {
-        // Monitor mentions
+        // Monitor mentions (every 30 seconds)
         if (this.client.fetchSearchTweets) {
+          elizaLogger.info("🔍 Checking mentions...");
           const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
+          elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
           if (mentions?.length > 0) {
             for (const mention of mentions) {
               await this.handleInteraction('mention', mention);
@@ -121,9 +128,11 @@ class MonitorOnlyTwitterManager {
           }
         }
 
-        // Monitor DMs
+        // Monitor DMs (every 30 seconds)
         if (this.client.fetchDirectMessages) {
+          elizaLogger.info("🔍 Checking DMs...");
           const messages = await this.client.fetchDirectMessages();
+          elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
           if (messages?.length > 0) {
             for (const message of messages) {
               await this.handleInteraction('dm', message);
@@ -131,9 +140,11 @@ class MonitorOnlyTwitterManager {
           }
         }
 
-        // Monitor replies
+        // Monitor replies (every 30 seconds)
         if (this.client.fetchReplies) {
+          elizaLogger.info("🔍 Checking replies...");
           const replies = await this.client.fetchReplies();
+          elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
           if (replies?.length > 0) {
             for (const reply of replies) {
               await this.handleInteraction('reply', reply);
@@ -142,19 +153,32 @@ class MonitorOnlyTwitterManager {
         }
 
       } catch (error) {
-        elizaLogger.error("Error in Twitter monitoring:", error);
+        elizaLogger.error("❌ Error in Twitter monitoring:", error);
+        if (error instanceof Error) {
+          elizaLogger.error("Error details:", {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
+          });
+        }
       }
-    }, 60000);
+    }, 30000); // Check interactions every 30 seconds
 
     // Clean up on process exit
     process.on('SIGINT', () => {
-      clearInterval(checkInterval);
-      elizaLogger.info("Stopping Twitter monitoring...");
+      clearInterval(interactionInterval);
+      elizaLogger.info("🛑 Stopping Twitter monitoring...");
       process.exit(0);
     });
   }
 
   private async handleInteraction(type: 'mention' | 'dm' | 'reply', interaction: any) {
+    elizaLogger.info(`🎯 Handling ${type} interaction:`, {
+      type,
+      from: interaction.author?.username || interaction.sender?.username,
+      content: (interaction.text || interaction.message)?.substring(0, 50) + "..."
+    });
+
     try {
       // Extract relevant information based on interaction type
       const interactionData = {
@@ -163,7 +187,7 @@ class MonitorOnlyTwitterManager {
         from: interaction.author?.username || interaction.sender?.username,
         content: interaction.text || interaction.message,
         id: interaction.id,
-        // Add any other relevant fields
+        raw: interaction // Include raw interaction data for debugging
       };
 
       // Send interaction to webhook
@@ -173,18 +197,30 @@ class MonitorOnlyTwitterManager {
       });
 
       // Generate and send response
+      elizaLogger.info("🤖 Generating response...");
       const response = await this.generateResponse(interactionData);
+      elizaLogger.info("✍️ Generated response:", response);
       
       // Send response back to Twitter
       let responseResult;
-      switch (type) {
-        case 'mention':
-        case 'reply':
-          responseResult = await this.client.reply(interaction.id, response);
-          break;
-        case 'dm':
-          responseResult = await this.client.sendDirectMessage(interaction.sender.id, response);
-          break;
+      try {
+        elizaLogger.info(`📤 Sending ${type} response...`);
+        switch (type) {
+          case 'mention':
+          case 'reply':
+            responseResult = await this.client.reply(interaction.id, response);
+            break;
+          case 'dm':
+            responseResult = await this.client.sendDirectMessage(
+              interaction.sender.id, 
+              response
+            );
+            break;
+        }
+        elizaLogger.success(`✅ Successfully sent ${type} response`);
+      } catch (error) {
+        elizaLogger.error(`❌ Error sending ${type} response:`, error);
+        throw error;
       }
 
       // Send response to webhook
@@ -201,7 +237,7 @@ class MonitorOnlyTwitterManager {
       });
 
     } catch (error) {
-      elizaLogger.error(`Error handling ${type}:`, error);
+      elizaLogger.error(`❌ Error handling ${type}:`, error);
       await this.sendToWebhook({
         event: 'twitter_interaction_error',
         data: {
@@ -513,28 +549,43 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
 
     directClient.registerAgent(runtime);
     
-    // Start generating posts at intervals
-    const intervalMin = character.settings?.post?.intervalMin || 1;
-    const intervalMax = character.settings?.post?.intervalMax || 3;
+    // Start monitoring Twitter interactions immediately
+    new MonitorOnlyTwitterManager(runtime);
     
-    // Generate first post immediately
-    await generateAndSendPost(runtime);
-    
-    const generatePost = () => {
-      const waitTime = (Math.random() * (intervalMax - intervalMin) + intervalMin) * 60000;
-      elizaLogger.info(`Next post will be generated in ${Math.round(waitTime/1000)} seconds`);
+    // Separate post generation timing
+    const startPostGeneration = () => {
+      const intervalMin = character.settings?.post?.intervalMin || 1;
+      const intervalMax = character.settings?.post?.intervalMax || 3;
       
+      elizaLogger.info("🎯 Starting post generation cycle");
+      elizaLogger.info(`📊 Post generation interval: ${intervalMin}-${intervalMax} minutes`);
+      
+      const generatePost = () => {
+        const waitTime = (Math.random() * (intervalMax - intervalMin) + intervalMin) * 60000;
+        const nextPostTime = new Date(Date.now() + waitTime);
+        
+        elizaLogger.info(`⏰ Next post scheduled for: ${nextPostTime.toLocaleString()}`);
+        elizaLogger.info(`⏳ Time until next post: ${Math.round(waitTime/1000)} seconds`);
+        
+        setTimeout(async () => {
+          elizaLogger.info("🎨 Starting scheduled post generation...");
+          await generateAndSendPost(runtime);
+          generatePost(); // Schedule next post
+        }, waitTime);
+      };
+
+      // Generate first post after a short delay
       setTimeout(async () => {
+        elizaLogger.info("🎨 Generating initial post...");
         await generateAndSendPost(runtime);
-        generatePost(); // Schedule next post
-      }, waitTime);
+        generatePost(); // Start the regular cycle
+      }, 5000); // Wait 5 seconds before first post
     };
 
     // Start the post generation cycle
-    generatePost();
+    startPostGeneration();
 
-    elizaLogger.success("Auto-posting agent started successfully");
-    elizaLogger.info(`Will generate posts every ${intervalMin}-${intervalMax} minutes`);
+    elizaLogger.success("✅ Auto-posting agent started successfully");
 
   } catch (error) {
     elizaLogger.error(
