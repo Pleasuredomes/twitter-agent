@@ -173,7 +173,6 @@ async function initializeClients(
 
   if (clientTypes.includes("twitter")) {
     try {
-      // Set TWITTER_DRY_RUN to false since we want actual Twitter interaction
       process.env.TWITTER_DRY_RUN = "false";
 
       elizaLogger.info("Starting Twitter client with credentials:", {
@@ -184,7 +183,13 @@ async function initializeClients(
       });
 
       const twitterClient = await TwitterClientInterface.start(runtime);
-      elizaLogger.info("Twitter client response:", twitterClient);
+      
+      // Only log safe properties from the Twitter client
+      elizaLogger.info("Twitter client initialized with profile:", {
+        username: twitterClient?.profile?.username,
+        id: twitterClient?.profile?.id,
+        // Add other safe properties you want to log
+      });
       
       if (twitterClient) {
         clients.push(twitterClient);
