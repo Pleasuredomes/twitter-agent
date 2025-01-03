@@ -191,12 +191,37 @@ async function initializeClients(
         elizaLogger.success("Twitter client initialized successfully");
       }
     } catch (error) {
-      elizaLogger.error("Failed to initialize Twitter client. Error details:", {
+      elizaLogger.error("Failed to initialize Twitter client. Full error details:", {
         name: error?.name,
         message: error?.message,
         stack: error?.stack,
-        fullError: JSON.stringify(error, null, 2)
+        fullError: error,
+        errorObject: JSON.stringify(error, null, 2),
+        errorProperties: Object.keys(error || {}),
+        innerError: error?.innerError ? {
+          name: error.innerError.name,
+          message: error.innerError.message,
+          stack: error.innerError.stack
+        } : 'No inner error',
+        cause: error?.cause ? {
+          name: error.cause.name,
+          message: error.cause.message,
+          stack: error.cause.stack
+        } : 'No cause'
       });
+
+      // Try to parse error message if it's JSON
+      try {
+        if (typeof error?.message === 'string' && error.message.startsWith('{')) {
+          const parsedError = JSON.parse(error.message);
+          elizaLogger.error("Parsed error message:", parsedError);
+          if (parsedError.errors) {
+            elizaLogger.error("Twitter API errors:", parsedError.errors);
+          }
+        }
+      } catch (e) {
+        elizaLogger.error("Could not parse error message as JSON");
+      }
     }
   }
 
