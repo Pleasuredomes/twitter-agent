@@ -243,11 +243,16 @@ class MonitorOnlyTwitterManager {
 
   private async sendToWebhook(payload: any) {
     if (!process.env.WEBHOOK_URL) {
-      elizaLogger.warn("Webhook URL not configured");
+      elizaLogger.warn("⚠️ Webhook URL not configured");
       return;
     }
 
+    elizaLogger.info("🌐 Attempting to send to webhook:", process.env.WEBHOOK_URL);
+    elizaLogger.info("📦 Payload being sent:", JSON.stringify(payload, null, 2));
+
     try {
+      elizaLogger.info("🚀 Sending webhook request...");
+      
       const response = await fetch(process.env.WEBHOOK_URL, {
         method: 'POST',
         headers: {
@@ -256,13 +261,35 @@ class MonitorOnlyTwitterManager {
         body: JSON.stringify(payload)
       });
 
+      elizaLogger.info("📥 Webhook response status:", response.status, response.statusText);
+      
+      const responseText = await response.text();
+      elizaLogger.info("📄 Webhook response body:", responseText || "(empty response)");
+
       if (!response.ok) {
+        elizaLogger.error("❌ Webhook request failed:", {
+          status: response.status,
+          statusText: response.statusText,
+          response: responseText
+        });
         throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
       }
 
-      elizaLogger.info(`Successfully sent ${payload.event} to webhook`);
+      elizaLogger.success(`✅ Successfully sent ${payload.event} to webhook`);
+      elizaLogger.info("⏱️ Webhook round-trip completed at:", new Date().toISOString());
+
     } catch (error) {
-      elizaLogger.error('Error sending to webhook:', error);
+      elizaLogger.error("❌ Error sending to webhook:", {
+        error: error.message,
+        stack: error.stack,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Log the failed payload for debugging
+      elizaLogger.error("📦 Failed payload:", {
+        event: payload.event,
+        dataSnapshot: JSON.stringify(payload.data, null, 2)
+      });
     }
   }
 }
