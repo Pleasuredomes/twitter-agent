@@ -83,166 +83,82 @@ interface TwitterPost {
 }
 
 class MonitorOnlyTwitterManager {
-  post: TwitterPost;
   interaction: TwitterInteraction;
   client: any;
 
   constructor(runtime: IAgentRuntime) {
-    // Use the static start method from TwitterClientInterface
-    TwitterClientInterface.start(runtime).then(client => {
-      this.client = client;
-    });
+    elizaLogger.info("Initializing Twitter monitoring manager...");
     
-    // Override post client to disable direct posting
-    this.post = {
-      async start() {
-        elizaLogger.info("Twitter posting disabled - using webhook only");
-      },
-      async generateNewTweet() {
-        return; // Do nothing
+    // Use the static start method and ensure client is initialized
+    TwitterClientInterface.start(runtime).then((client: any) => {
+      elizaLogger.info("Twitter client initialized with profile:", client.profile);
+      this.client = client;
+      this.startMonitoring();  // Only start monitoring after client is ready
+    }).catch(error => {
+      elizaLogger.error("Failed to initialize Twitter client:", error);
+    });
+  }
+
+  private async startMonitoring() {
+    elizaLogger.info("Starting Twitter monitoring...");
+    const checkInterval = setInterval(async () => {
+      if (!this.client || !this.client.profile) {
+        elizaLogger.error("Twitter client not ready yet");
+        return;
       }
-    };
 
-    // Override interaction client
-    this.interaction = {
-      async start() {
-        elizaLogger.info("Starting Twitter monitoring...");
-        this.handleTwitterInteractions();
-      },
-      
-      async handleTwitterInteractions() {
-        const checkInterval = setInterval(async () => {
-          const twitterUsername = this.client.profile?.username;
-          if (!twitterUsername) {
-            elizaLogger.error("Twitter client not properly initialized");
-            return;
-          }
+      const twitterUsername = this.client.profile?.username;
+      elizaLogger.info(`Checking Twitter interactions for @${twitterUsername}...`);
 
-          try {
-            // Monitor mentions
-            elizaLogger.info(`Checking mentions for @${twitterUsername}...`);
-            const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
-            elizaLogger.info(`Found ${mentions.tweets?.length || 0} mentions`);
-            for (const tweet of mentions.tweets) {
-              if (tweet.userId !== this.client.profile.id) {
-                elizaLogger.info(`Processing mention: ${tweet.text}`);
-                await this.handleTweet({...tweet, type: 'mention'});
-              }
-            }
+      try {
+        // Log available methods
+        elizaLogger.info("Available client methods:", Object.keys(this.client));
+        
+        // Monitor mentions
+        if (this.client.fetchSearchTweets) {
+          elizaLogger.info("Checking mentions...");
+          const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
+          elizaLogger.info("Raw mentions response:", mentions);
+        } else {
+          elizaLogger.warn("fetchSearchTweets method not available");
+        }
 
-            // Monitor DMs
-            elizaLogger.info("Checking DMs...");
-            const messages = await this.client.fetchDirectMessages();
-            elizaLogger.info(`Found ${messages?.length || 0} DMs`);
-            for (const dm of messages) {
-              if (dm.senderId !== this.client.profile.id) {
-                elizaLogger.info(`Processing DM: ${dm.text}`);
-                await this.handleTweet({...dm, type: 'dm'});
-              }
-            }
+        // Monitor DMs
+        if (this.client.fetchDirectMessages) {
+          elizaLogger.info("Checking DMs...");
+          const messages = await this.client.fetchDirectMessages();
+          elizaLogger.info("Raw DMs response:", messages);
+        } else {
+          elizaLogger.warn("fetchDirectMessages method not available");
+        }
 
-            // Monitor replies
-            elizaLogger.info("Checking replies...");
-            const replies = await this.client.fetchReplies();
-            elizaLogger.info(`Found ${replies?.length || 0} replies`);
-            for (const reply of replies) {
-              if (reply.userId !== this.client.profile.id) {
-                elizaLogger.info(`Processing reply: ${reply.text}`);
-                await this.handleTweet({...reply, type: 'reply'});
-              }
-            }
+        // Monitor replies
+        if (this.client.fetchReplies) {
+          elizaLogger.info("Checking replies...");
+          const replies = await this.client.fetchReplies();
+          elizaLogger.info("Raw replies response:", replies);
+        } else {
+          elizaLogger.warn("fetchReplies method not available");
+        }
 
-          } catch (error) {
-            elizaLogger.error("Error monitoring Twitter:", error);
-            elizaLogger.error("Error details:", error);
-          }
-        }, 60000); // Check every minute
-
-        elizaLogger.info("Twitter monitoring started successfully");
-
-        // Clean up on process exit
-        process.on('SIGINT', () => {
-          clearInterval(checkInterval);
-          elizaLogger.info("Stopping Twitter monitoring...");
-          process.exit(0);
-        });
-      },
-
-      async handleTweet(tweet: any) {
-        try {
-          // Generate response using the character's personality
-          const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/${runtime.character.name}/message`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              text: tweet.text,
-              userId: tweet.userId || 'twitter_user',
-              userName: tweet.username || 'Twitter User',
-              roomId: `twitter_${tweet.id || Date.now()}`
-            })
+      } catch (error) {
+        elizaLogger.error("Error in Twitter monitoring:", error);
+        if (error instanceof Error) {
+          elizaLogger.error("Error details:", {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
           });
-
-          const data = await response.json();
-          const replyText = data[0]?.text;
-
-          if (!replyText) {
-            elizaLogger.error("No response generated");
-            return;
-          }
-
-          // Send to webhook instead of Twitter
-          if ((runtime.character as ExtendedCharacter).settings?.webhook?.enabled) {
-            const webhookUrl = (runtime.character as ExtendedCharacter).settings.webhook.url;
-            
-            const payload = {
-              text: replyText,
-              character: runtime.character.name,
-              timestamp: new Date().toISOString(),
-              source: {
-                platform: 'twitter',
-                messageType: tweet.type,
-                originalTweet: {
-                  id: tweet.id,
-                  text: tweet.text,
-                  author: tweet.username,
-                  url: tweet.permanentUrl
-                }
-              }
-            };
-
-            const webhookResponse = await fetch(webhookUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-
-            if (webhookResponse.ok) {
-              elizaLogger.success(`Sent response to webhook: ${replyText}`);
-            } else {
-              elizaLogger.error(`Failed to send to webhook: ${await webhookResponse.text()}`);
-            }
-          }
-
-          // Store the interaction in the database
-          await runtime.messageManager.createMemory({
-            id: stringToUuid(tweet.id + "-" + runtime.agentId),
-            userId: stringToUuid(tweet.userId),
-            content: {
-              text: tweet.text,
-              url: tweet.permanentUrl,
-              source: 'twitter'
-            },
-            roomId: stringToUuid(tweet.conversationId + "-" + runtime.agentId),
-            agentId: runtime.agentId,
-            embedding: embeddingZeroVector,
-            createdAt: tweet.timestamp * 1000
-          });
-
-        } catch (error) {
-          elizaLogger.error("Error handling Twitter interaction:", error);
         }
       }
-    };
+    }, 60000);
+
+    // Clean up on process exit
+    process.on('SIGINT', () => {
+      clearInterval(checkInterval);
+      elizaLogger.info("Stopping Twitter monitoring...");
+      process.exit(0);
+    });
   }
 }
 
