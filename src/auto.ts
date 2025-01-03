@@ -203,8 +203,23 @@ async function initializeClients(
         elizaLogger.success("Twitter client initialized successfully");
       }
     } catch (error) {
+<<<<<<< HEAD
+<<<<<<< HEAD
       elizaLogger.error("Failed to initialize Twitter client:", error);
       // ... rest of error logging ...
+=======
+=======
+>>>>>>> parent of 68556b0 (verbose)
+      elizaLogger.error("Failed to initialize Twitter client. Error details:", {
+        name: error?.name,
+        message: error?.message,
+        stack: error?.stack,
+        fullError: JSON.stringify(error, null, 2)
+      });
+<<<<<<< HEAD
+>>>>>>> parent of 68556b0 (verbose)
+=======
+>>>>>>> parent of 68556b0 (verbose)
     }
   }
 
