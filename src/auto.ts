@@ -89,6 +89,7 @@ class MonitorOnlyTwitterManager {
   private initializationRetries: number = 0;
   private readonly MAX_RETRIES: number = 5;
   private runtime: IAgentRuntime;
+  private processedInteractions: Set<string> = new Set(); // Track processed interactions
 
   constructor(runtime: IAgentRuntime) {
     elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
@@ -100,6 +101,13 @@ class MonitorOnlyTwitterManager {
     try {
       elizaLogger.info("🔄 Attempting to initialize Twitter client...");
       
+      // Log credentials being used (safely)
+      elizaLogger.info("🔑 Using Twitter credentials:", {
+        username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
+        email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
+        password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
+      });
+      
       this.client = await TwitterClientInterface.start(runtime);
       
       if (this.client?.profile) {
@@ -108,12 +116,16 @@ class MonitorOnlyTwitterManager {
           id: this.client.profile.id
         });
         this.isInitialized = true;
-        this.startMonitoring();  // Only start monitoring after client is ready
+        this.startMonitoring();
       } else {
         throw new Error("Twitter client initialized but profile is missing");
       }
     } catch (error) {
-      elizaLogger.error("❌ Failed to initialize Twitter client:", error);
+      elizaLogger.error("❌ Failed to initialize Twitter client:", {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        details: error
+      });
       
       if (this.initializationRetries < this.MAX_RETRIES) {
         this.initializationRetries++;
@@ -200,8 +212,19 @@ class MonitorOnlyTwitterManager {
   }
 
   private async handleInteraction(type: 'mention' | 'dm' | 'reply', interaction: any) {
-    elizaLogger.info(`🎯 Handling ${type} interaction:`, {
-      type,
+    const interactionId = `${type}-${interaction.id}-${interaction.created_at}`;
+    
+    // Check if we've already processed this interaction
+    if (this.processedInteractions.has(interactionId)) {
+      elizaLogger.info(`🔄 Skipping already processed ${type}:`, {
+        id: interaction.id,
+        from: interaction.author?.username || interaction.sender?.username
+      });
+      return;
+    }
+
+    elizaLogger.info(`🎯 Processing new ${type} interaction:`, {
+      id: interaction.id,
       from: interaction.author?.username || interaction.sender?.username,
       content: (interaction.text || interaction.message)?.substring(0, 50) + "..."
     });
@@ -261,21 +284,26 @@ class MonitorOnlyTwitterManager {
         }
         elizaLogger.success(`✅ Successfully sent ${type} response`);
 
-        // Send response to appropriate webhook
+        // Add to processed set after successful response
+        this.processedInteractions.add(interactionId);
+
+        // Send response to webhook
         if (webhookUrl) {
           const responsePayload = {
             event: 'twitter_response_sent',
             data: {
+              type,
               originalInteraction: interactionData,
               response: {
                 content: response,
                 timestamp: new Date().toISOString(),
-                success: !!responseResult
+                success: !!responseResult,
+                responseData: responseResult // Include the response data
               }
             }
           };
           
-          elizaLogger.info(`📤 Sending response to webhook:`, {
+          elizaLogger.info(`📤 Sending ${type} response to webhook:`, {
             url: webhookUrl,
             payload: JSON.stringify(responsePayload, null, 2)
           });
