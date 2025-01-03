@@ -85,21 +85,48 @@ interface TwitterPost {
 class MonitorOnlyTwitterManager {
   interaction: TwitterInteraction;
   client: any;
+  private isInitialized: boolean = false;
+  private initializationRetries: number = 0;
+  private readonly MAX_RETRIES: number = 5;
+  private runtime: IAgentRuntime;
 
   constructor(runtime: IAgentRuntime) {
     elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
-    
-    // Use the static start method and ensure client is initialized
-    TwitterClientInterface.start(runtime).then((client: any) => {
-      elizaLogger.info("✅ Twitter client initialized with profile:", {
-        username: client?.profile?.username,
-        id: client?.profile?.id
-      });
-      this.client = client;
-      this.startMonitoring();  // Only start monitoring after client is ready
-    }).catch(error => {
+    this.runtime = runtime;
+    this.initializeTwitterClient(runtime);
+  }
+
+  private async initializeTwitterClient(runtime: IAgentRuntime) {
+    try {
+      elizaLogger.info("🔄 Attempting to initialize Twitter client...");
+      
+      this.client = await TwitterClientInterface.start(runtime);
+      
+      if (this.client?.profile) {
+        elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
+          username: this.client.profile.username,
+          id: this.client.profile.id
+        });
+        this.isInitialized = true;
+        this.startMonitoring();  // Only start monitoring after client is ready
+      } else {
+        throw new Error("Twitter client initialized but profile is missing");
+      }
+    } catch (error) {
       elizaLogger.error("❌ Failed to initialize Twitter client:", error);
-    });
+      
+      if (this.initializationRetries < this.MAX_RETRIES) {
+        this.initializationRetries++;
+        const delay = Math.min(1000 * Math.pow(2, this.initializationRetries), 30000);
+        elizaLogger.info(`🔄 Retrying initialization in ${delay/1000} seconds... (Attempt ${this.initializationRetries}/${this.MAX_RETRIES})`);
+        
+        setTimeout(() => {
+          this.initializeTwitterClient(runtime);
+        }, delay);
+      } else {
+        elizaLogger.error("⛔ Max retries reached. Failed to initialize Twitter client.");
+      }
+    }
   }
 
   private async startMonitoring() {
@@ -186,16 +213,30 @@ class MonitorOnlyTwitterManager {
         from: interaction.author?.username || interaction.sender?.username,
         content: interaction.text || interaction.message,
         id: interaction.id,
-        raw: interaction
+        raw: {
+          author: interaction.author,
+          sender: interaction.sender,
+          text: interaction.text,
+          message: interaction.message,
+          id: interaction.id,
+          created_at: interaction.created_at
+        }
       };
 
       // Send to appropriate webhook based on interaction type
       const webhookUrl = this.getWebhookUrl(type);
       if (webhookUrl) {
-        await this.sendToWebhook({
+        const webhookPayload = {
           event: 'twitter_interaction_received',
           data: interactionData
-        }, webhookUrl);
+        };
+        
+        elizaLogger.info(`📤 Sending ${type} to webhook:`, {
+          url: webhookUrl,
+          payload: JSON.stringify(webhookPayload, null, 2)
+        });
+        
+        await this.sendToWebhook(webhookPayload, webhookUrl);
       }
 
       // Generate and send response
@@ -222,7 +263,7 @@ class MonitorOnlyTwitterManager {
 
         // Send response to appropriate webhook
         if (webhookUrl) {
-          await this.sendToWebhook({
+          const responsePayload = {
             event: 'twitter_response_sent',
             data: {
               originalInteraction: interactionData,
@@ -232,7 +273,14 @@ class MonitorOnlyTwitterManager {
                 success: !!responseResult
               }
             }
-          }, webhookUrl);
+          };
+          
+          elizaLogger.info(`📤 Sending response to webhook:`, {
+            url: webhookUrl,
+            payload: JSON.stringify(responsePayload, null, 2)
+          });
+          
+          await this.sendToWebhook(responsePayload, webhookUrl);
         }
       } catch (error) {
         elizaLogger.error(`❌ Error sending ${type} response:`, error);
