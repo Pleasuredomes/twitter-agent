@@ -82,390 +82,188 @@ interface TwitterPost {
   generateNewTweet(): Promise<void>;
 }
 
-class MonitorOnlyTwitterManager {
-  interaction: TwitterInteraction;
-  client: any;
-  private isInitialized: boolean = false;
-  private initializationRetries: number = 0;
-  private readonly MAX_RETRIES: number = 5;
-  private runtime: IAgentRuntime;
-  private processedInteractions: Set<string> = new Set(); // Track processed interactions
+class TwitterInteractionHandler {
+  private client: any;
+  private runtime: any;
+  private lastCheckedTweetId: number | null = null;
+  private processedTweets: Set<string> = new Set();
 
-  constructor(runtime: IAgentRuntime) {
-    elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
+  constructor(client: any, runtime: any) {
+    this.client = client;
     this.runtime = runtime;
-    this.initializeTwitterClient(runtime);
   }
 
-  private async initializeTwitterClient(runtime: IAgentRuntime) {
-    try {
-      elizaLogger.info("🔄 Attempting to initialize Twitter client...");
-      
-      // Log credentials being used (safely)
-      elizaLogger.info("🔑 Using Twitter credentials:", {
-        username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
-        email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
-        password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
-      });
-      
-      const twitterClient = await TwitterClientInterface.start(runtime);
-      this.client = twitterClient;
-
-      // Wait for profile to be loaded
-      let retries = 0;
-      while (!this.client.profile && retries < 10) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        retries++;
-      }
-      
-      if (this.client.profile) {
-        elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
-          username: this.client.profile.username,
-          id: this.client.profile.id
-        });
-        this.isInitialized = true;
-        
-        // Set up event listeners
-        this.setupEventListeners();
-        
-        // Start monitoring
-        this.startMonitoring();
-      } else {
-        throw new Error("Twitter client initialized but profile is missing after waiting");
-      }
-    } catch (error) {
-      elizaLogger.error("❌ Failed to initialize Twitter client:", {
-        error: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined,
-        details: error
-      });
-      
-      if (this.initializationRetries < this.MAX_RETRIES) {
-        this.initializationRetries++;
-        const delay = Math.min(1000 * Math.pow(2, this.initializationRetries), 30000);
-        elizaLogger.info(`🔄 Retrying initialization in ${delay/1000} seconds... (Attempt ${this.initializationRetries}/${this.MAX_RETRIES})`);
-        
-        setTimeout(() => {
-          this.initializeTwitterClient(runtime);
-        }, delay);
-      } else {
-        elizaLogger.error("⛔ Max retries reached. Failed to initialize Twitter client.");
-      }
-    }
+  async start() {
+    elizaLogger.info("🚀 Starting Twitter interaction handler...");
+    this.handleInteractions();
   }
 
-  private setupEventListeners() {
-    if (!this.client) {
-      elizaLogger.error("Cannot setup listeners - client not initialized");
-      return;
-    }
-
-    // Listen for tweet saving events
-    this.client.addListener('tweet:save', async (tweet: any) => {
-      elizaLogger.info('💾 Saving Tweet:', tweet.id);
-      await this.handleInteraction('tweet_save', {
-        id: tweet.id,
-        text: tweet.text,
-        timestamp: new Date().toISOString()
-      });
-    });
-
-    // Listen for client events
-    this.client.addListener('client:started', () => {
-      elizaLogger.info('🚀 Twitter client started');
-    });
-
-    this.client.addListener('client:ready', (profile: any) => {
-      elizaLogger.info('✅ Twitter client ready:', profile);
-    });
-
-    // Listen for interaction events
-    this.client.addListener('interaction:mention', async (mention: any) => {
-      elizaLogger.info('📨 Mention received:', mention);
-      await this.handleInteraction('mention', mention);
-    });
-
-    this.client.addListener('interaction:reply', async (reply: any) => {
-      elizaLogger.info('↩️ Reply received:', reply);
-      await this.handleInteraction('reply', reply);
-    });
-
-    this.client.addListener('interaction:dm', async (dm: any) => {
-      elizaLogger.info('📩 DM received:', dm);
-      await this.handleInteraction('dm', dm);
-    });
-
-    // Listen for tweet events
-    this.client.addListener('tweet:found', async (tweet: any) => {
-      elizaLogger.info('🔍 New Tweet found:', tweet.url);
-      await this.handleInteraction('tweet_found', tweet);
-    });
-
-    this.client.addListener('tweet:processing', async (tweetId: string) => {
-      elizaLogger.info('⚙️ Processing Tweet:', tweetId);
-      await this.handleInteraction('tweet_processing', { id: tweetId });
-    });
-
-    // Listen for generation events
-    this.client.addListener('generation:start', async (data: any) => {
-      elizaLogger.info('🎯 Starting generation:', data);
-      await this.handleInteraction('generation_start', data);
-    });
-
-    this.client.addListener('generation:complete', async (data: any) => {
-      elizaLogger.info('✨ Generation complete:', data);
-      await this.handleInteraction('generation_complete', data);
-    });
-
-    // Listen for errors
-    this.client.addListener('error', (error: any) => {
-      elizaLogger.error('❌ Twitter client error:', error);
-      this.sendToWebhook({
-        event: 'twitter_error',
-        data: {
-          error: error instanceof Error ? error.message : error,
-          timestamp: new Date().toISOString()
-        }
-      }, process.env.WEBHOOK_URL || '');
-    });
-  }
-
-  private async startMonitoring() {
-    elizaLogger.info("🔄 Starting Twitter monitoring...");
-    
-    // Wait for client initialization before starting the monitoring interval
-    const waitForClient = async () => {
-      if (!this.isInitialized || !this.client || !this.client.profile) {
-        elizaLogger.warn("⚠️ Twitter client not ready yet, waiting 5 seconds...");
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        return waitForClient();
+  private async handleInteractions() {
+    const checkInteractions = async () => {
+      try {
+        elizaLogger.info("👀 Checking Twitter interactions...");
+        await this.checkMentions();
+        await this.checkReplies();
+        await this.checkDirectMessages();
+      } catch (error) {
+        elizaLogger.error("❌ Error checking interactions:", error);
       }
-      
-      // Once client is ready, start the monitoring interval
-      const interactionInterval = setInterval(async () => {
-        try {
-          const twitterUsername = this.client.profile?.username;
-          elizaLogger.info(`👀 Checking Twitter interactions for @${twitterUsername}...`);
 
-          // Monitor mentions
-          if (this.client.fetchSearchTweets) {
-            elizaLogger.info("🔍 Checking mentions...");
-            const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
-            elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
-            if (mentions?.length > 0) {
-              for (const mention of mentions) {
-                await this.handleInteraction('mention', mention);
-              }
-            }
-          }
-
-          // Monitor DMs
-          if (this.client.fetchDirectMessages) {
-            elizaLogger.info("🔍 Checking DMs...");
-            const messages = await this.client.fetchDirectMessages();
-            elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
-            if (messages?.length > 0) {
-              for (const message of messages) {
-                await this.handleInteraction('dm', message);
-              }
-            }
-          }
-
-          // Monitor replies
-          if (this.client.fetchReplies) {
-            elizaLogger.info("🔍 Checking replies...");
-            const replies = await this.client.fetchReplies();
-            elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
-            if (replies?.length > 0) {
-              for (const reply of replies) {
-                await this.handleInteraction('reply', reply);
-              }
-            }
-          }
-
-        } catch (error) {
-          elizaLogger.error("❌ Error in Twitter monitoring:", error);
-          if (error instanceof Error) {
-            elizaLogger.error("Error details:", {
-              name: error.name,
-              message: error.message,
-              stack: error.stack
-            });
-          }
-          
-          // Send error to webhook
-          await this.sendToWebhook({
-            event: 'twitter_monitoring_error',
-            data: {
-              error: error instanceof Error ? error.message : error,
-              timestamp: new Date().toISOString()
-            }
-          }, process.env.WEBHOOK_URL || '');
-        }
-      }, 30000);
-
-      // Clean up on process exit
-      process.on('SIGINT', () => {
-        clearInterval(interactionInterval);
-        elizaLogger.info("🛑 Stopping Twitter monitoring...");
-        process.exit(0);
-      });
+      // Schedule next check
+      setTimeout(checkInteractions, 30000); // Check every 30 seconds
     };
 
-    // Start the waiting process
-    await waitForClient();
+    // Start checking
+    checkInteractions();
   }
 
-  private async handleInteraction(type: string, interaction: any) {
-    const interactionId = `${type}-${interaction.id || new Date().getTime()}`;
-    
-    elizaLogger.info('🎯 Handling interaction:', {
-      type,
-      id: interactionId
-    });
-    
-    if (this.processedInteractions.has(interactionId)) {
-      elizaLogger.info(`🔄 Skipping already processed ${type}`);
-      return;
-    }
-
-    this.processedInteractions.add(interactionId);
-
+  private async checkMentions() {
     try {
-      // Get webhook URL
-      const webhookUrl = this.getWebhookUrl(type);
-      if (!webhookUrl) {
-        elizaLogger.warn("⚠️ No webhook URL configured");
-        return;
-      }
+      const username = this.client.profile?.username;
+      if (!username) return;
 
-      // Prepare the interaction data based on type
-      let interactionData: any = {
-        type,
-        timestamp: new Date().toISOString()
-      };
+      elizaLogger.info("🔍 Checking mentions...");
+      const mentions = await this.client.fetchSearchTweets(`@${username}`, 20);
 
-      // Add type-specific data
-      switch (type) {
-        case 'new_tweet_found':
-        case 'processing_tweet':
-        case 'generating_response':
-        case 'response_generated':
-        case 'evaluating_action':
-          interactionData = {
-            ...interactionData,
-            ...interaction
-          };
-          break;
-        default:
-          // Handle regular Twitter interactions
-          interactionData = {
-            ...interactionData,
-            id: interaction.id,
-            text: interaction.text || interaction.message,
-            author: interaction.author?.username || interaction.sender?.username,
-            raw_data: interaction
-          };
-      }
+      if (mentions?.length > 0) {
+        elizaLogger.info(`📨 Found ${mentions.length} mentions`);
+        
+        for (const mention of mentions) {
+          if (this.processedTweets.has(mention.id)) continue;
+          
+          elizaLogger.info('📝 Processing mention:', {
+            id: mention.id,
+            author: mention.author?.username,
+            text: mention.text
+          });
 
-      elizaLogger.info('📤 Preparing webhook payload:', {
-        event: `twitter_${type}`,
-        data: interactionData
-      });
+          // Send to webhook
+          await this.sendToWebhook('mention', {
+            id: mention.id,
+            type: 'mention',
+            author: mention.author?.username,
+            text: mention.text,
+            url: mention.permanentUrl,
+            timestamp: new Date().toISOString()
+          });
 
-      // Send to webhook
-      await this.sendToWebhook({
-        event: `twitter_${type}`,
-        data: interactionData
-      }, webhookUrl);
-
-      // Generate response only for interactive types
-      if (['mention', 'dm', 'reply'].includes(type)) {
-        elizaLogger.info('🤖 Generating response for interactive type:', type);
-        const response = await this.generateResponse(interaction);
-        if (response) {
-          const responsePayload = {
-            event: `twitter_response`,
-            data: {
-              original_interaction: interactionData,
-              response: {
-                text: response,
-                timestamp: new Date().toISOString()
-              }
-            }
-          };
-          elizaLogger.info('📤 Preparing response webhook payload:', responsePayload);
-          await this.sendToWebhook(responsePayload, webhookUrl);
+          // Generate and send response if needed
+          await this.handleResponse(mention);
+          
+          this.processedTweets.add(mention.id);
         }
       }
-
     } catch (error) {
-      elizaLogger.error(`❌ Error handling ${type}:`, error);
-      const errorPayload = {
-        event: 'twitter_interaction_error',
-        data: {
-          type,
-          error: error instanceof Error ? error.message : error,
+      elizaLogger.error("❌ Error checking mentions:", error);
+    }
+  }
+
+  private async checkReplies() {
+    try {
+      elizaLogger.info("🔍 Checking replies...");
+      const replies = await this.client.fetchReplies();
+
+      if (replies?.length > 0) {
+        elizaLogger.info(`📨 Found ${replies.length} replies`);
+        
+        for (const reply of replies) {
+          if (this.processedTweets.has(reply.id)) continue;
+          
+          elizaLogger.info('📝 Processing reply:', {
+            id: reply.id,
+            author: reply.author?.username,
+            text: reply.text,
+            in_reply_to: reply.in_reply_to_status_id
+          });
+
+          // Send to webhook
+          await this.sendToWebhook('reply', {
+            id: reply.id,
+            type: 'reply',
+            author: reply.author?.username,
+            text: reply.text,
+            in_reply_to: reply.in_reply_to_status_id,
+            url: reply.permanentUrl,
+            timestamp: new Date().toISOString()
+          });
+
+          // Generate and send response if needed
+          await this.handleResponse(reply);
+          
+          this.processedTweets.add(reply.id);
+        }
+      }
+    } catch (error) {
+      elizaLogger.error("❌ Error checking replies:", error);
+    }
+  }
+
+  private async checkDirectMessages() {
+    try {
+      elizaLogger.info("🔍 Checking DMs...");
+      const messages = await this.client.fetchDirectMessages();
+
+      if (messages?.length > 0) {
+        elizaLogger.info(`📨 Found ${messages.length} DMs`);
+        
+        for (const message of messages) {
+          if (this.processedTweets.has(message.id)) continue;
+          
+          elizaLogger.info('📝 Processing DM:', {
+            id: message.id,
+            sender: message.sender?.username,
+            text: message.text
+          });
+
+          // Send to webhook
+          await this.sendToWebhook('dm', {
+            id: message.id,
+            type: 'dm',
+            sender: message.sender?.username,
+            text: message.text,
+            timestamp: new Date().toISOString()
+          });
+
+          // Generate and send response if needed
+          await this.handleResponse(message);
+          
+          this.processedTweets.add(message.id);
+        }
+      }
+    } catch (error) {
+      elizaLogger.error("❌ Error checking DMs:", error);
+    }
+  }
+
+  private async handleResponse(interaction: any) {
+    try {
+      const response = await this.generateResponse(interaction);
+      if (!response) return;
+
+      elizaLogger.info('✨ Generated response:', {
+        for_id: interaction.id,
+        response
+      });
+
+      // Send response to webhook
+      await this.sendToWebhook('response', {
+        type: 'response',
+        original_interaction: interaction,
+        response: {
+          text: response,
           timestamp: new Date().toISOString()
         }
-      };
-      elizaLogger.error('📤 Sending error webhook payload:', errorPayload);
-      await this.sendToWebhook(errorPayload, process.env.WEBHOOK_URL || '');
-    }
-  }
-
-  private getWebhookUrl(type: string): string | undefined {
-    const typeSpecificUrl = {
-      tweet_save: process.env.WEBHOOK_URL_TWEETS,
-      tweet_found: process.env.WEBHOOK_URL_TWEETS,
-      tweet_processing: process.env.WEBHOOK_URL_TWEETS,
-      mention: process.env.WEBHOOK_URL_MENTIONS,
-      reply: process.env.WEBHOOK_URL_REPLIES,
-      dm: process.env.WEBHOOK_URL_DMS,
-      generation_start: process.env.WEBHOOK_URL_TWEETS,
-      generation_complete: process.env.WEBHOOK_URL_TWEETS,
-      error: process.env.WEBHOOK_URL
-    }[type];
-
-    return typeSpecificUrl || process.env.WEBHOOK_URL;
-  }
-
-  private async sendToWebhook(payload: any, webhookUrl: string) {
-    if (!webhookUrl) {
-      elizaLogger.warn("⚠️ No webhook URL provided");
-      return;
-    }
-
-    elizaLogger.info(`🌐 Sending to webhook:`, {
-      url: webhookUrl,
-      event: payload.event,
-      type: payload.data?.type
-    });
-
-    elizaLogger.info('📦 Full webhook payload:', JSON.stringify(payload, null, 2));
-
-    try {
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
       });
 
-      if (!response.ok) {
-        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+      // Send the actual response
+      if (interaction.type === 'dm') {
+        await this.client.sendDirectMessage(interaction.sender.id, response);
+      } else {
+        await this.client.sendTweet(response, interaction.id);
       }
 
-      const responseText = await response.text();
-      elizaLogger.info(`📥 Webhook response (${response.status}):`, responseText || "(empty response)");
-      elizaLogger.success(`✅ Successfully sent ${payload.event} to webhook`);
     } catch (error) {
-      elizaLogger.error("❌ Webhook error:", {
-        event: payload.event,
-        type: payload.data?.type,
-        error: error instanceof Error ? error.message : error,
-        payload: JSON.stringify(payload, null, 2)
-      });
-      throw error;
+      elizaLogger.error("❌ Error handling response:", error);
     }
   }
 
@@ -487,10 +285,127 @@ class MonitorOnlyTwitterManager {
       }
 
       const data = await response.json();
-      return data[0]?.text || 'Sorry, I could not generate a response.';
+      return data[0]?.text || '';
     } catch (error) {
       elizaLogger.error('Error generating response:', error);
-      throw error;
+      return '';
+    }
+  }
+
+  private async sendToWebhook(type: string, data: any) {
+    const webhookUrl = this.getWebhookUrl(type);
+    if (!webhookUrl) {
+      elizaLogger.warn("⚠️ No webhook URL configured for type:", type);
+      return;
+    }
+
+    const payload = {
+      event: `twitter_${type}`,
+      data: {
+        ...data,
+        processed_at: new Date().toISOString()
+      }
+    };
+
+    elizaLogger.info('📤 Sending to webhook:', {
+      type,
+      url: webhookUrl
+    });
+
+    elizaLogger.info('📦 Webhook payload:', JSON.stringify(payload, null, 2));
+
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+      }
+
+      elizaLogger.success(`✅ Successfully sent ${type} to webhook`);
+    } catch (error) {
+      elizaLogger.error("❌ Webhook error:", {
+        type,
+        error: error instanceof Error ? error.message : error
+      });
+    }
+  }
+
+  private getWebhookUrl(type: string): string | undefined {
+    const typeSpecificUrl = {
+      mention: process.env.WEBHOOK_URL_MENTIONS,
+      reply: process.env.WEBHOOK_URL_REPLIES,
+      dm: process.env.WEBHOOK_URL_DMS,
+      response: process.env.WEBHOOK_URL
+    }[type];
+
+    return typeSpecificUrl || process.env.WEBHOOK_URL;
+  }
+}
+
+class MonitorOnlyTwitterManager {
+  interaction: TwitterInteractionHandler;
+  client: any;
+  private isInitialized: boolean = false;
+  private initializationRetries: number = 0;
+  private readonly MAX_RETRIES: number = 5;
+  private runtime: IAgentRuntime;
+
+  constructor(runtime: IAgentRuntime) {
+    elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
+    this.runtime = runtime;
+    this.initializeTwitterClient(runtime);
+  }
+
+  private async initializeTwitterClient(runtime: IAgentRuntime) {
+    try {
+      elizaLogger.info("🔄 Attempting to initialize Twitter client...");
+      
+      elizaLogger.info("🔑 Using Twitter credentials:", {
+        username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
+        email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
+        password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
+      });
+      
+      const twitterClient = await TwitterClientInterface.start(runtime);
+      this.client = twitterClient;
+
+      if (this.client.profile) {
+        elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
+          username: this.client.profile.username,
+          id: this.client.profile.id
+        });
+        
+        this.isInitialized = true;
+        
+        // Initialize and start the interaction handler
+        this.interaction = new TwitterInteractionHandler(this.client, runtime);
+        await this.interaction.start();
+        
+      } else {
+        throw new Error("Twitter client initialized but profile is missing");
+      }
+    } catch (error) {
+      elizaLogger.error("❌ Failed to initialize Twitter client:", {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        details: error
+      });
+      
+      if (this.initializationRetries < this.MAX_RETRIES) {
+        this.initializationRetries++;
+        const delay = Math.min(1000 * Math.pow(2, this.initializationRetries), 30000);
+        elizaLogger.info(`🔄 Retrying initialization in ${delay/1000} seconds... (Attempt ${this.initializationRetries}/${this.MAX_RETRIES})`);
+        
+        setTimeout(() => {
+          this.initializeTwitterClient(runtime);
+        }, delay);
+      } else {
+        elizaLogger.error("⛔ Max retries reached. Failed to initialize Twitter client.");
+      }
     }
   }
 }
