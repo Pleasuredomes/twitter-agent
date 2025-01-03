@@ -550,7 +550,11 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
       
       elizaLogger.info("📦 Post webhook payload:", JSON.stringify(payload, null, 2));
       
-      await sendToWebhook(payload, webhookUrl);
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
     }
   } catch (error) {
     elizaLogger.error("❌ Error in post generation process:", error);
