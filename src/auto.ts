@@ -320,9 +320,6 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
     // Ensure data directory exists with proper permissions
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true, mode: 0o755 });
-    } else {
-      // Update permissions on existing directory
-      fs.chmodSync(dataDir, 0o755);
     }
 
     const db = initializeDatabase(dataDir);
@@ -332,6 +329,12 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
     const runtime = createAgent(character, db, cache, token) as ExtendedRuntime;
 
     await runtime.initialize();
+    
+    // Initialize clients including Twitter
+    elizaLogger.info("Initializing clients...");
+    const clients = await initializeClients(character, runtime);
+    elizaLogger.info("Initialized clients:", clients.length);
+
     directClient.registerAgent(runtime);
     
     // Start generating posts at intervals
