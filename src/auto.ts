@@ -144,71 +144,78 @@ class MonitorOnlyTwitterManager {
   private async startMonitoring() {
     elizaLogger.info("🔄 Starting Twitter monitoring...");
     
-    // Separate interval for interaction monitoring (every 30 seconds)
-    const interactionInterval = setInterval(async () => {
-      if (!this.client || !this.client.profile) {
-        elizaLogger.error("⚠️ Twitter client not ready yet");
-        return;
-      }
+    // Wait for client initialization before starting the monitoring interval
+    const waitForClient = async () => {
+        if (!this.isInitialized || !this.client || !this.client.profile) {
+            elizaLogger.warn("⚠️ Twitter client not ready yet, waiting 5 seconds...");
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            return waitForClient();
+        }
+        
+        // Once client is ready, start the monitoring interval
+        const interactionInterval = setInterval(async () => {
+            try {
+                const twitterUsername = this.client.profile?.username;
+                elizaLogger.info(`👀 Checking Twitter interactions for @${twitterUsername}...`);
 
-      const twitterUsername = this.client.profile?.username;
-      elizaLogger.info(`👀 Checking Twitter interactions for @${twitterUsername}...`);
+                // Monitor mentions
+                if (this.client.fetchSearchTweets) {
+                    elizaLogger.info("🔍 Checking mentions...");
+                    const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
+                    elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
+                    if (mentions?.length > 0) {
+                        for (const mention of mentions) {
+                            await this.handleInteraction('mention', mention);
+                        }
+                    }
+                }
 
-      try {
-        // Monitor mentions (every 30 seconds)
-        if (this.client.fetchSearchTweets) {
-          elizaLogger.info("🔍 Checking mentions...");
-          const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
-          elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
-          if (mentions?.length > 0) {
-            for (const mention of mentions) {
-              await this.handleInteraction('mention', mention);
+                // Monitor DMs (every 30 seconds)
+                if (this.client.fetchDirectMessages) {
+                    elizaLogger.info("🔍 Checking DMs...");
+                    const messages = await this.client.fetchDirectMessages();
+                    elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
+                    if (messages?.length > 0) {
+                        for (const message of messages) {
+                            await this.handleInteraction('dm', message);
+                        }
+                    }
+                }
+
+                // Monitor replies (every 30 seconds)
+                if (this.client.fetchReplies) {
+                    elizaLogger.info("🔍 Checking replies...");
+                    const replies = await this.client.fetchReplies();
+                    elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
+                    if (replies?.length > 0) {
+                        for (const reply of replies) {
+                            await this.handleInteraction('reply', reply);
+                        }
+                    }
+                }
+
+            } catch (error) {
+                elizaLogger.error("❌ Error in Twitter monitoring:", error);
+                if (error instanceof Error) {
+                    elizaLogger.error("Error details:", {
+                        name: error.name,
+                        message: error.message,
+                        stack: error.stack
+                    });
+                }
             }
-          }
-        }
+        }, 30000);
 
-        // Monitor DMs (every 30 seconds)
-        if (this.client.fetchDirectMessages) {
-          elizaLogger.info("🔍 Checking DMs...");
-          const messages = await this.client.fetchDirectMessages();
-          elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
-          if (messages?.length > 0) {
-            for (const message of messages) {
-              await this.handleInteraction('dm', message);
-            }
-          }
-        }
+        // Clean up on process exit
+        process.on('SIGINT', () => {
+            clearInterval(interactionInterval);
+            elizaLogger.info("🛑 Stopping Twitter monitoring...");
+            process.exit(0);
+        });
+    };
 
-        // Monitor replies (every 30 seconds)
-        if (this.client.fetchReplies) {
-          elizaLogger.info("🔍 Checking replies...");
-          const replies = await this.client.fetchReplies();
-          elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
-          if (replies?.length > 0) {
-            for (const reply of replies) {
-              await this.handleInteraction('reply', reply);
-            }
-          }
-        }
-
-      } catch (error) {
-        elizaLogger.error("❌ Error in Twitter monitoring:", error);
-        if (error instanceof Error) {
-          elizaLogger.error("Error details:", {
-            name: error.name,
-            message: error.message,
-            stack: error.stack
-          });
-        }
-      }
-    }, 30000); // Check interactions every 30 seconds
-
-    // Clean up on process exit
-    process.on('SIGINT', () => {
-      clearInterval(interactionInterval);
-      elizaLogger.info("🛑 Stopping Twitter monitoring...");
-      process.exit(0);
-    });
+    // Start the waiting process
+    await waitForClient();
   }
 
   private async handleInteraction(type: 'mention' | 'dm' | 'reply', interaction: any) {
