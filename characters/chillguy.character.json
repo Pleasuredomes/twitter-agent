@@ -1,7 +1,7 @@
 {
   "name": "chillguy",
   "plugins": [],
-  "clients": ["twitter"],
+  "clients": [],
   "modelProvider": "openrouter",
   "settings": {
     "secrets": {},

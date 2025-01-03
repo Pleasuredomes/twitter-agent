@@ -17,6 +17,7 @@ import {
   settings,
   IDatabaseAdapter,
   validateCharacterConfig,
+  embeddingZeroVector,
 } from "@ai16z/eliza";
 import { bootstrapPlugin } from "@ai16z/plugin-bootstrap";
 import Database from "better-sqlite3";
@@ -26,7 +27,9 @@ import { fileURLToPath } from "url";
 import { character } from "./character.ts";
 import type { DirectClient } from "@ai16z/client-direct";
 import yargs from "yargs";
+import TwitterManager from "@ai16z/client-twitter";
 import { TwitterClientInterface } from "@ai16z/client-twitter";
+import Client from "@ai16z/client-twitter";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,7 +39,7 @@ interface ExtendedSettings {
   voice?: { model?: string; url?: string };
   model?: string;
   embeddingModel?: string;
-  webhook?: {
+  webhook: {
     enabled: boolean;
     url: string;
     logToConsole?: boolean;
@@ -68,18 +71,187 @@ function initializeDatabase(dataDir: string) {
   return db;
 }
 
+interface TwitterInteraction {
+  start(): Promise<void>;
+  handleTwitterInteractions(): Promise<void>;
+  handleTweet(tweet: any): Promise<void>;
+}
+
+interface TwitterPost {
+  start(postImmediately?: boolean): Promise<void>;
+  generateNewTweet(): Promise<void>;
+}
+
+class MonitorOnlyTwitterManager {
+  post: TwitterPost;
+  interaction: TwitterInteraction;
+  client: any;
+
+  constructor(runtime: IAgentRuntime) {
+    // Use the static start method from TwitterClientInterface
+    TwitterClientInterface.start(runtime).then(client => {
+      this.client = client;
+    });
+    
+    // Override post client to disable direct posting
+    this.post = {
+      async start() {
+        elizaLogger.info("Twitter posting disabled - using webhook only");
+      },
+      async generateNewTweet() {
+        return; // Do nothing
+      }
+    };
+
+    // Override interaction client
+    this.interaction = {
+      async start() {
+        elizaLogger.info("Starting Twitter monitoring...");
+        this.handleTwitterInteractions();
+      },
+      
+      async handleTwitterInteractions() {
+        const checkInterval = setInterval(async () => {
+          const twitterUsername = this.client.profile?.username;
+          if (!twitterUsername) {
+            elizaLogger.error("Twitter client not properly initialized");
+            return;
+          }
+
+          try {
+            // Monitor mentions
+            const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
+            for (const tweet of mentions.tweets) {
+              if (tweet.userId !== this.client.profile.id) {
+                await this.handleTweet({...tweet, type: 'mention'});
+              }
+            }
+
+            // Monitor DMs
+            const messages = await this.client.fetchDirectMessages();
+            for (const dm of messages) {
+              if (dm.senderId !== this.client.profile.id) {
+                await this.handleTweet({...dm, type: 'dm'});
+              }
+            }
+
+            // Monitor replies to our tweets
+            const replies = await this.client.fetchReplies();
+            for (const reply of replies) {
+              if (reply.userId !== this.client.profile.id) {
+                await this.handleTweet({...reply, type: 'reply'});
+              }
+            }
+
+          } catch (error) {
+            elizaLogger.error("Error monitoring Twitter:", error);
+          }
+        }, 60000); // Check every minute
+
+        // Clean up on process exit
+        process.on('SIGINT', () => {
+          clearInterval(checkInterval);
+          elizaLogger.info("Stopping Twitter monitoring...");
+          process.exit(0);
+        });
+      },
+
+      async handleTweet(tweet: any) {
+        try {
+          // Generate response using the character's personality
+          const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/${runtime.character.name}/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: tweet.text,
+              userId: tweet.userId || 'twitter_user',
+              userName: tweet.username || 'Twitter User',
+              roomId: `twitter_${tweet.id || Date.now()}`
+            })
+          });
+
+          const data = await response.json();
+          const replyText = data[0]?.text;
+
+          if (!replyText) {
+            elizaLogger.error("No response generated");
+            return;
+          }
+
+          // Send to webhook instead of Twitter
+          if ((runtime.character as ExtendedCharacter).settings?.webhook?.enabled) {
+            const webhookUrl = (runtime.character as ExtendedCharacter).settings.webhook.url;
+            
+            const payload = {
+              text: replyText,
+              character: runtime.character.name,
+              timestamp: new Date().toISOString(),
+              source: {
+                platform: 'twitter',
+                messageType: tweet.type,
+                originalTweet: {
+                  id: tweet.id,
+                  text: tweet.text,
+                  author: tweet.username,
+                  url: tweet.permanentUrl
+                }
+              }
+            };
+
+            const webhookResponse = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            if (webhookResponse.ok) {
+              elizaLogger.success(`Sent response to webhook: ${replyText}`);
+            } else {
+              elizaLogger.error(`Failed to send to webhook: ${await webhookResponse.text()}`);
+            }
+          }
+
+          // Store the interaction in the database
+          await runtime.messageManager.createMemory({
+            id: stringToUuid(tweet.id + "-" + runtime.agentId),
+            userId: stringToUuid(tweet.userId),
+            content: {
+              text: tweet.text,
+              url: tweet.permanentUrl,
+              source: 'twitter'
+            },
+            roomId: stringToUuid(tweet.conversationId + "-" + runtime.agentId),
+            agentId: runtime.agentId,
+            embedding: embeddingZeroVector,
+            createdAt: tweet.timestamp * 1000
+          });
+
+        } catch (error) {
+          elizaLogger.error("Error handling Twitter interaction:", error);
+        }
+      }
+    };
+  }
+}
+
 async function initializeClients(
   character: Character,
   runtime: IAgentRuntime
 ) {
   const clients = [];
-  const clientTypes = character.clients?.map((str) => str.toLowerCase()) || [];
   
-  if (clientTypes.includes("twitter")) {
-    const twitterClient = await TwitterClientInterface.start(runtime);
-    if (twitterClient) clients.push(twitterClient);
+  try {
+    // Initialize custom Twitter manager
+    const twitterManager = new MonitorOnlyTwitterManager(runtime);
+    await twitterManager.client.init();
+    await twitterManager.interaction.start();
+    
+    elizaLogger.success("Twitter client initialized in monitoring mode");
+    clients.push(twitterManager);
+  } catch (error) {
+    elizaLogger.error("Failed to initialize Twitter client:", error);
   }
-  
+
   return clients;
 }
 
