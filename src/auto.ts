@@ -452,8 +452,11 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
   try {
     elizaLogger.info("🎲 Starting post generation process...");
     
+    const serverPort = process.env.SERVER_PORT || '3000';
+    elizaLogger.info(`🌐 Using server port: ${serverPort}`);
+    
     // Generate a post using the runtime's message generation
-    const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/${runtime.character.name}/message`, {
+    const response = await fetch(`http://localhost:${serverPort}/${runtime.character.name}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -481,8 +484,8 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
     elizaLogger.success("📝 Generated post:", post);
 
     // Send to webhook if configured
-    if (runtime.character.settings?.webhook?.enabled) {
-      const webhookUrl = runtime.character.settings.webhook.url;
+    if (process.env.WEBHOOK_URL) {
+      const webhookUrl = process.env.WEBHOOK_URL;
       elizaLogger.info(`🌐 Attempting to send to webhook: ${webhookUrl}`);
       
       const payload = {
@@ -522,7 +525,7 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
         }
       }
     } else {
-      elizaLogger.warn("⚠️ Webhook not configured for this character");
+      elizaLogger.warn("⚠️ Webhook URL not configured");
     }
   } catch (error) {
     elizaLogger.error("❌ Error in post generation process:", error);
@@ -570,13 +573,14 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
     // Start monitoring Twitter interactions immediately
     new MonitorOnlyTwitterManager(runtime);
     
-    // Separate post generation timing
+    // Separate post generation timing using environment variables
     const startPostGeneration = () => {
-      const intervalMin = character.settings?.post?.intervalMin || 1;
-      const intervalMax = character.settings?.post?.intervalMax || 3;
+      // Use environment variables with fallback values
+      const intervalMin = parseInt(process.env.POST_INTERVAL_MIN || '1');
+      const intervalMax = parseInt(process.env.POST_INTERVAL_MAX || '3');
       
       elizaLogger.info("🎯 Starting post generation cycle");
-      elizaLogger.info(`📊 Post generation interval: ${intervalMin}-${intervalMax} minutes`);
+      elizaLogger.info(`📊 Post generation interval configured: ${intervalMin}-${intervalMax} minutes`);
       
       const generatePost = () => {
         const waitTime = (Math.random() * (intervalMax - intervalMin) + intervalMin) * 60000;
@@ -584,18 +588,30 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
         
         elizaLogger.info(`⏰ Next post scheduled for: ${nextPostTime.toLocaleString()}`);
         elizaLogger.info(`⏳ Time until next post: ${Math.round(waitTime/1000)} seconds`);
+        elizaLogger.info(`📊 Current interval settings: ${intervalMin}-${intervalMax} minutes`);
         
         setTimeout(async () => {
           elizaLogger.info("🎨 Starting scheduled post generation...");
-          await generateAndSendPost(runtime);
+          try {
+            await generateAndSendPost(runtime);
+            elizaLogger.success("✅ Post generated and sent successfully");
+          } catch (error) {
+            elizaLogger.error("❌ Error generating post:", error);
+          }
           generatePost(); // Schedule next post
         }, waitTime);
       };
 
       // Generate first post after a short delay
+      elizaLogger.info("⏳ Scheduling initial post in 5 seconds...");
       setTimeout(async () => {
         elizaLogger.info("🎨 Generating initial post...");
-        await generateAndSendPost(runtime);
+        try {
+          await generateAndSendPost(runtime);
+          elizaLogger.success("✅ Initial post generated and sent successfully");
+        } catch (error) {
+          elizaLogger.error("❌ Error generating initial post:", error);
+        }
         generatePost(); // Start the regular cycle
       }, 5000); // Wait 5 seconds before first post
     };
