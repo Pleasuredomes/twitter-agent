@@ -212,26 +212,26 @@ class MonitorOnlyTwitterManager {
   }
 
   private async handleInteraction(type: 'mention' | 'dm' | 'reply', interaction: any) {
-    const interactionId = `${type}-${interaction.id}`;
-    
-    if (this.processedInteractions.has(interactionId)) {
-      elizaLogger.info(`🔄 Skipping already processed ${type}`);
-      return;
-    }
-
-    this.processedInteractions.add(interactionId);
-
     try {
-      // Get webhook URL
-      const webhookUrl = process.env.WEBHOOK_URL;
-      if (!webhookUrl) {
-        elizaLogger.warn("⚠️ No webhook URL configured");
+      const interactionId = `${type}-${interaction.id}`;
+      
+      if (this.processedInteractions.has(interactionId)) {
         return;
       }
 
-      // First, send the incoming tweet
-      const incomingPayload = {
-        event: 'twitter_incoming_tweet',
+      // Mark as processed immediately to prevent duplicates
+      this.processedInteractions.add(interactionId);
+
+      // Get webhook URL from environment
+      const webhookUrl = process.env.WEBHOOK_URL;
+      if (!webhookUrl) {
+        elizaLogger.error("❌ No webhook URL configured in environment");
+        return;
+      }
+
+      // 1. Send incoming tweet event
+      const tweetPayload = {
+        event: "twitter_post_generated", // Keep consistent with existing format
         data: {
           text: interaction.text || interaction.message,
           author: interaction.author?.username || interaction.sender?.username,
@@ -242,41 +242,47 @@ class MonitorOnlyTwitterManager {
         }
       };
 
-      elizaLogger.info("📥 Sending incoming tweet to webhook:", JSON.stringify(incomingPayload, null, 2));
-      
+      // Send tweet to webhook
       await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(incomingPayload)
+        body: JSON.stringify(tweetPayload)
       });
 
-      // Generate response
+      // 2. Generate and send response
       const response = await this.generateResponse(interaction);
-
       if (response) {
-        // Send the response to webhook
         const responsePayload = {
-          event: 'twitter_outgoing_response',
+          event: "twitter_post_generated",
           data: {
-            original_tweet: incomingPayload.data,
-            response: {
-              text: response,
-              timestamp: new Date().toISOString()
-            }
+            text: response,
+            author: this.client.profile?.username,
+            timestamp: new Date().toISOString(),
+            type: "response",
+            in_reply_to: interaction.id,
+            original_tweet: tweetPayload.data
           }
         };
 
-        elizaLogger.info("📤 Sending response to webhook:", JSON.stringify(responsePayload, null, 2));
-        
+        // Send response to webhook
         await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(responsePayload)
         });
+
+        // Actually send the reply on Twitter
+        if (this.client.reply) {
+          await this.client.reply(interaction.id, response);
+        }
       }
 
     } catch (error) {
-      elizaLogger.error(`❌ Error handling ${type}:`, error);
+      elizaLogger.error("❌ Error in handleInteraction:", {
+        type,
+        id: interaction.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
