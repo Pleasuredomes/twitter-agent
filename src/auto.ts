@@ -279,57 +279,31 @@ class MonitorOnlyTwitterManager {
 
   private async sendToWebhook(payload: any, webhookUrl: string) {
     if (!webhookUrl) {
-      elizaLogger.warn("⚠️ Webhook URL not configured for this interaction type");
-      return;
+        elizaLogger.warn("⚠️ Webhook URL not configured for this interaction type");
+        return;
     }
 
-    // Add detailed console logging of the webhook payload
-    console.log('\n=== Webhook Payload ===');
-    console.log('Event:', payload.event);
-    console.log('Timestamp:', new Date().toISOString());
-    console.log('URL:', webhookUrl);
-    console.log('Payload Data:');
-    console.log(JSON.stringify(payload, null, 2));  // Pretty print the payload
-    console.log('=====================\n');
-
     try {
-      elizaLogger.info("🚀 Sending webhook request...");
-      
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload)
-      });
-
-      // Log the webhook response
-      console.log('\n=== Webhook Response ===');
-      console.log('Status:', response.status, response.statusText);
-      const responseText = await response.text();
-      console.log('Response:', responseText || '(empty response)');
-      console.log('=====================\n');
-
-      if (!response.ok) {
-        elizaLogger.error("❌ Webhook request failed:", {
-          status: response.status,
-          statusText: response.statusText,
-          response: responseText
+        elizaLogger.info("🚀 Sending webhook request...");
+        
+        const response = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload)
         });
-        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
-      }
+
+        if (!response.ok) {
+            elizaLogger.error("❌ Webhook request failed:", {
+                status: response.status,
+                statusText: response.statusText
+            });
+            throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+        }
 
     } catch (error) {
-      console.log('\n=== Webhook Error ===');
-      console.log('Error:', error.message);
-      console.log('Failed Payload:', JSON.stringify(payload, null, 2));
-      console.log('=====================\n');
-      
-      elizaLogger.error("❌ Error sending to webhook:", {
-        error: error.message,
-        stack: error.stack,
-        timestamp: new Date().toISOString()
-      });
+        elizaLogger.error("❌ Error sending to webhook:", error);
     }
   }
 
