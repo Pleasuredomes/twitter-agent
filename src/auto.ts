@@ -173,14 +173,26 @@ async function initializeClients(
 
   if (clientTypes.includes("twitter")) {
     try {
-      elizaLogger.info("Starting Twitter client...");
+      elizaLogger.info("Starting Twitter client with credentials:", {
+        username: process.env.TWITTER_USERNAME?.substring(0, 3) + "..." || "NOT SET",
+        email: process.env.TWITTER_EMAIL?.substring(0, 3) + "..." || "NOT SET",
+        password: process.env.TWITTER_PASSWORD ? "[SET]" : "NOT SET"
+      });
+
       const twitterClient = await TwitterClientInterface.start(runtime);
+      elizaLogger.info("Twitter client response:", twitterClient);
+      
       if (twitterClient) {
-        elizaLogger.success("Twitter client initialized successfully");
         clients.push(twitterClient);
+        elizaLogger.success("Twitter client initialized successfully");
       }
     } catch (error) {
-      elizaLogger.error("Failed to initialize Twitter client:", error);
+      elizaLogger.error("Failed to initialize Twitter client. Error details:", {
+        name: error?.name,
+        message: error?.message,
+        stack: error?.stack,
+        fullError: JSON.stringify(error, null, 2)
+      });
     }
   }
 
