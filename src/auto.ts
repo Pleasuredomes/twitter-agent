@@ -389,75 +389,32 @@ async function initializeClients(
         dryRun: process.env.TWITTER_DRY_RUN
       });
 
-      const twitterClient = await TwitterClientInterface.start(runtime) as Client;
-      
-      // Add event listeners for all Twitter events
-      twitterClient.on('mention', (mention) => {
-        elizaLogger.info('📨 New mention received:', mention);
-        forwardToWebhook('mention', mention);
-      });
-
-      twitterClient.on('dm', (message) => {
-        elizaLogger.info('📩 New DM received:', message);
-        forwardToWebhook('dm', message);
-      });
-
-      twitterClient.on('reply', (reply) => {
-        elizaLogger.info('↩️ New reply received:', reply);
-        forwardToWebhook('reply', reply);
-      });
-
-      twitterClient.on('response', (response) => {
-        elizaLogger.info('📤 Bot response:', response);
-        forwardToWebhook('response', response);
-      });
-
-      // Log any errors
-      twitterClient.on('error', (error) => {
-        elizaLogger.error('❌ Twitter client error:', {
-          message: error.message,
-          stack: error.stack,
-          timestamp: new Date().toISOString()
-        });
-        forwardToWebhook('error', error);
-      });
-
-      if (twitterClient) {
-        clients.push(twitterClient);
-        elizaLogger.success("✅ Twitter client initialized successfully with logging enabled");
-      }
-    } catch (error) {
-      elizaLogger.error("Failed to initialize Twitter client. Full error details:", {
-        name: error?.name,
-        message: error?.message,
-        stack: error?.stack,
-        fullError: error,
-        errorObject: JSON.stringify(error, null, 2),
-        errorProperties: Object.keys(error || {}),
-        innerError: error?.innerError ? {
-          name: error.innerError.name,
-          message: error.innerError.message,
-          stack: error.innerError.stack
-        } : 'No inner error',
-        cause: error?.cause ? {
-          name: error.cause.name,
-          message: error.cause.message,
-          stack: error.cause.stack
-        } : 'No cause'
-      });
-
-      // Try to parse error message if it's JSON
-      try {
-        if (typeof error?.message === 'string' && error.message.startsWith('{')) {
-          const parsedError = JSON.parse(error.message);
-          elizaLogger.error("Parsed error message:", parsedError);
-          if (parsedError.errors) {
-            elizaLogger.error("Twitter API errors:", parsedError.errors);
-          }
+      // Create Twitter manager through the interface
+      const twitterManager = (await TwitterManager.start(runtime)) as typeof TwitterManager & {
+        interaction: {
+          start(): Promise<void>;
+          on(event: string, callback: (data: any) => void): void;
         }
-      } catch (e) {
-        elizaLogger.error("Could not parse error message as JSON");
-      }
+      };
+      await twitterManager.interaction.start();
+
+      // Add event listeners
+      twitterManager.interaction.on('mention', (mention) => {
+        elizaLogger.info('📨 DEBUG: Mention received:', mention);
+      });
+
+      twitterManager.interaction.on('dm', (message) => {
+        elizaLogger.info('📩 DEBUG: DM received:', message);
+      });
+
+      twitterManager.interaction.on('reply', (reply) => {
+        elizaLogger.info('↩️ DEBUG: Reply received:', reply);
+      });
+
+      clients.push(twitterManager);
+      elizaLogger.success("✅ Twitter manager initialized successfully");
+    } catch (error) {
+      elizaLogger.error("Failed to initialize Twitter client:", error);
     }
   }
 
