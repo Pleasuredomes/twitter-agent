@@ -176,14 +176,26 @@ async function initializeClients(
       // Set TWITTER_DRY_RUN to false since we want actual Twitter interaction
       process.env.TWITTER_DRY_RUN = "false";
 
-      elizaLogger.info("Starting Twitter client with credentials:", {
-        username: process.env.TWITTER_USERNAME?.substring(0, 3) + "..." || "NOT SET",
-        email: process.env.TWITTER_EMAIL?.substring(0, 3) + "..." || "NOT SET",
-        password: process.env.TWITTER_PASSWORD ? "[SET]" : "NOT SET",
-        dryRun: process.env.TWITTER_DRY_RUN
-      });
+      // Check if we have the auth token
+      if (!process.env.TWITTER_AUTH_TOKEN) {
+        elizaLogger.error("Missing TWITTER_AUTH_TOKEN in environment variables");
+        return clients;
+      }
 
-      const twitterClient = await TwitterClientInterface.start(runtime);
+      elizaLogger.info("Starting Twitter client with auth token...");
+
+      const twitterClient = await TwitterClientInterface.start({
+        ...runtime,
+        options: {
+          ...runtime.options,
+          cookies: [{
+            domain: "twitter.com",
+            name: "auth_token",
+            value: process.env.TWITTER_AUTH_TOKEN
+          }]
+        }
+      });
+      
       elizaLogger.info("Twitter client response:", twitterClient);
       
       if (twitterClient) {
@@ -191,37 +203,8 @@ async function initializeClients(
         elizaLogger.success("Twitter client initialized successfully");
       }
     } catch (error) {
-      elizaLogger.error("Failed to initialize Twitter client. Full error details:", {
-        name: error?.name,
-        message: error?.message,
-        stack: error?.stack,
-        fullError: error,
-        errorObject: JSON.stringify(error, null, 2),
-        errorProperties: Object.keys(error || {}),
-        innerError: error?.innerError ? {
-          name: error.innerError.name,
-          message: error.innerError.message,
-          stack: error.innerError.stack
-        } : 'No inner error',
-        cause: error?.cause ? {
-          name: error.cause.name,
-          message: error.cause.message,
-          stack: error.cause.stack
-        } : 'No cause'
-      });
-
-      // Try to parse error message if it's JSON
-      try {
-        if (typeof error?.message === 'string' && error.message.startsWith('{')) {
-          const parsedError = JSON.parse(error.message);
-          elizaLogger.error("Parsed error message:", parsedError);
-          if (parsedError.errors) {
-            elizaLogger.error("Twitter API errors:", parsedError.errors);
-          }
-        }
-      } catch (e) {
-        elizaLogger.error("Could not parse error message as JSON");
-      }
+      elizaLogger.error("Failed to initialize Twitter client:", error);
+      // ... rest of error logging ...
     }
   }
 
