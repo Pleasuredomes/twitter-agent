@@ -180,28 +180,29 @@ class MonitorOnlyTwitterManager {
     });
 
     try {
-      // Extract relevant information based on interaction type
       const interactionData = {
         type,
         timestamp: new Date().toISOString(),
         from: interaction.author?.username || interaction.sender?.username,
         content: interaction.text || interaction.message,
         id: interaction.id,
-        raw: interaction // Include raw interaction data for debugging
+        raw: interaction
       };
 
-      // Send interaction to webhook
-      await this.sendToWebhook({
-        event: 'twitter_interaction_received',
-        data: interactionData
-      });
+      // Send to appropriate webhook based on interaction type
+      const webhookUrl = this.getWebhookUrl(type);
+      if (webhookUrl) {
+        await this.sendToWebhook({
+          event: 'twitter_interaction_received',
+          data: interactionData
+        }, webhookUrl);
+      }
 
       // Generate and send response
       elizaLogger.info("🤖 Generating response...");
       const response = await this.generateResponse(interactionData);
       elizaLogger.info("✍️ Generated response:", response);
       
-      // Send response back to Twitter
       let responseResult;
       try {
         elizaLogger.info(`📤 Sending ${type} response...`);
@@ -218,78 +219,70 @@ class MonitorOnlyTwitterManager {
             break;
         }
         elizaLogger.success(`✅ Successfully sent ${type} response`);
+
+        // Send response to appropriate webhook
+        if (webhookUrl) {
+          await this.sendToWebhook({
+            event: 'twitter_response_sent',
+            data: {
+              originalInteraction: interactionData,
+              response: {
+                content: response,
+                timestamp: new Date().toISOString(),
+                success: !!responseResult
+              }
+            }
+          }, webhookUrl);
+        }
       } catch (error) {
         elizaLogger.error(`❌ Error sending ${type} response:`, error);
         throw error;
       }
 
-      // Send response to webhook
-      await this.sendToWebhook({
-        event: 'twitter_response_sent',
-        data: {
-          originalInteraction: interactionData,
-          response: {
-            content: response,
-            timestamp: new Date().toISOString(),
-            success: !!responseResult
-          }
-        }
-      });
-
     } catch (error) {
       elizaLogger.error(`❌ Error handling ${type}:`, error);
-      await this.sendToWebhook({
-        event: 'twitter_interaction_error',
-        data: {
-          type,
-          error: {
-            message: error.message,
-            stack: error.stack
+      const webhookUrl = this.getWebhookUrl(type);
+      if (webhookUrl) {
+        await this.sendToWebhook({
+          event: 'twitter_interaction_error',
+          data: {
+            type,
+            error: {
+              message: error.message,
+              stack: error.stack
+            }
           }
-        }
-      });
-    }
-  }
-
-  private async generateResponse(interaction: any): Promise<string> {
-    // Use the runtime's message generation capability
-    try {
-      const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: interaction.content,
-          userId: interaction.from,
-          userName: interaction.from,
-          roomId: 'twitter'
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to generate response: ${await response.text()}`);
+        }, webhookUrl);
       }
-
-      const data = await response.json();
-      return data[0]?.text || 'Sorry, I could not generate a response.';
-    } catch (error) {
-      elizaLogger.error('Error generating response:', error);
-      throw error;
     }
   }
 
-  private async sendToWebhook(payload: any) {
-    if (!process.env.WEBHOOK_URL) {
-      elizaLogger.warn("⚠️ Webhook URL not configured");
+  private getWebhookUrl(type: 'mention' | 'dm' | 'reply'): string | undefined {
+    switch (type) {
+      case 'mention':
+        return process.env.WEBHOOK_URL_MENTIONS;
+      case 'dm':
+        return process.env.WEBHOOK_URL_DMS;
+      case 'reply':
+        return process.env.WEBHOOK_URL_REPLIES;
+      default:
+        return process.env.WEBHOOK_URL; // fallback to default webhook
+    }
+  }
+
+  private async sendToWebhook(payload: any, webhookUrl: string) {
+    if (!webhookUrl) {
+      elizaLogger.warn("⚠️ Webhook URL not configured for this interaction type");
       return;
     }
 
-    elizaLogger.info("🌐 Attempting to send to webhook:", process.env.WEBHOOK_URL);
+    elizaLogger.info(`🌐 Attempting to send to webhook (${payload.event}):`, webhookUrl);
     elizaLogger.info("📦 Payload being sent:", JSON.stringify(payload, null, 2));
 
     try {
       elizaLogger.info("🚀 Sending webhook request...");
       
-      const response = await fetch(process.env.WEBHOOK_URL, {
+      const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -321,11 +314,36 @@ class MonitorOnlyTwitterManager {
         timestamp: new Date().toISOString()
       });
       
-      // Log the failed payload for debugging
       elizaLogger.error("📦 Failed payload:", {
         event: payload.event,
         dataSnapshot: JSON.stringify(payload.data, null, 2)
       });
+    }
+  }
+
+  private async generateResponse(interaction: any): Promise<string> {
+    // Use the runtime's message generation capability
+    try {
+      const response = await fetch(`http://localhost:${process.env.SERVER_PORT || 3000}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: interaction.content,
+          userId: interaction.from,
+          userName: interaction.from,
+          roomId: 'twitter'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to generate response: ${await response.text()}`);
+      }
+
+      const data = await response.json();
+      return data[0]?.text || 'Sorry, I could not generate a response.';
+    } catch (error) {
+      elizaLogger.error('Error generating response:', error);
+      throw error;
     }
   }
 }
