@@ -222,47 +222,57 @@ class MonitorOnlyTwitterManager {
     this.processedInteractions.add(interactionId);
 
     try {
-      // Get specific webhook URL or fall back to default
-      const webhookUrl = {
-        mention: process.env.WEBHOOK_URL_MENTIONS,
-        dm: process.env.WEBHOOK_URL_DMS,
-        reply: process.env.WEBHOOK_URL_REPLIES
-      }[type] || process.env.WEBHOOK_URL;
+      // Get webhook URL
+      const webhookUrl = process.env.WEBHOOK_URL;
+      if (!webhookUrl) {
+        elizaLogger.warn("⚠️ No webhook URL configured");
+        return;
+      }
 
-      elizaLogger.info(`🎯 Using webhook URL for ${type}:`, webhookUrl);
-
-      // Generate response first
-      const response = await this.generateResponse(interaction);
-
-      // Prepare webhook payload in consistent format
-      const webhookPayload = {
-        event: `twitter_${type}_received`,
+      // First, send the incoming tweet
+      const incomingPayload = {
+        event: 'twitter_incoming_tweet',
         data: {
           text: interaction.text || interaction.message,
           author: interaction.author?.username || interaction.sender?.username,
           url: `https://twitter.com/${interaction.author?.username}/status/${interaction.id}`,
           timestamp: new Date().toISOString(),
           type: type,
-          response: response,
           tweet_id: interaction.id
         }
       };
 
-      elizaLogger.info(`📤 Sending ${type} to webhook:`, {
-        url: webhookUrl,
-        payload: JSON.stringify(webhookPayload, null, 2)
-      });
-
-      const webhookResponse = await fetch(webhookUrl, {
+      elizaLogger.info("📥 Sending incoming tweet to webhook:", JSON.stringify(incomingPayload, null, 2));
+      
+      await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(webhookPayload)
+        body: JSON.stringify(incomingPayload)
       });
 
-      if (webhookResponse.ok) {
-        elizaLogger.success(`✅ Successfully sent ${type} to webhook`);
-      } else {
-        elizaLogger.error(`❌ Failed to send ${type} to webhook:`, await webhookResponse.text());
+      // Generate response
+      const response = await this.generateResponse(interaction);
+
+      if (response) {
+        // Send the response to webhook
+        const responsePayload = {
+          event: 'twitter_outgoing_response',
+          data: {
+            original_tweet: incomingPayload.data,
+            response: {
+              text: response,
+              timestamp: new Date().toISOString()
+            }
+          }
+        };
+
+        elizaLogger.info("📤 Sending response to webhook:", JSON.stringify(responsePayload, null, 2));
+        
+        await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(responsePayload)
+        });
       }
 
     } catch (error) {
