@@ -1,6 +1,6 @@
 {
   "name": "tate",
-  "clients": [],
+  "clients": ["twitter"],
   "modelProvider": "openai",
   "settings": {
       "secrets": {},
