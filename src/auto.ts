@@ -183,14 +183,12 @@ async function initializeClients(
       });
 
       const twitterClient = await TwitterClientInterface.start(runtime);
-      
       // Only log safe properties from the Twitter client
       elizaLogger.info("Twitter client initialized with profile:", {
-        username: twitterClient?.profile?.username,
-        id: twitterClient?.profile?.id,
+        username: (twitterClient as any)?.profile?.username,
+        id: (twitterClient as any)?.profile?.id,
         // Add other safe properties you want to log
       });
-      
       if (twitterClient) {
         clients.push(twitterClient);
         elizaLogger.success("Twitter client initialized successfully");
