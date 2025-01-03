@@ -89,8 +89,7 @@ class MonitorOnlyTwitterManager {
   private initializationRetries: number = 0;
   private readonly MAX_RETRIES: number = 5;
   private runtime: IAgentRuntime;
-  private processedInteractions: Set<string> = new Set();
-  private monitoringInterval: NodeJS.Timeout | null = null;
+  private processedInteractions: Set<string> = new Set(); // Track processed interactions
 
   constructor(runtime: IAgentRuntime) {
     elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
@@ -109,26 +108,23 @@ class MonitorOnlyTwitterManager {
         password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
       });
       
-      // Initialize Twitter client
-      this.client = new Client({
-        username: process.env.TWITTER_USERNAME,
-        password: process.env.TWITTER_PASSWORD,
-        email: process.env.TWITTER_EMAIL
-      });
-
-      await this.client.login();
+      this.client = await TwitterClientInterface.start(runtime);
       
-      if (this.client?.isLoggedIn()) {
-        elizaLogger.success("✅ Twitter client initialized and logged in successfully");
+      if (this.client?.profile) {
+        elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
+          username: this.client.profile.username,
+          id: this.client.profile.id
+        });
         this.isInitialized = true;
-        await this.startMonitoring();
+        this.startMonitoring();
       } else {
-        throw new Error("Twitter client initialized but not logged in");
+        throw new Error("Twitter client initialized but profile is missing");
       }
     } catch (error) {
       elizaLogger.error("❌ Failed to initialize Twitter client:", {
         error: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined
+        stack: error instanceof Error ? error.stack : undefined,
+        details: error
       });
       
       if (this.initializationRetries < this.MAX_RETRIES) {
@@ -148,85 +144,71 @@ class MonitorOnlyTwitterManager {
   private async startMonitoring() {
     elizaLogger.info("🔄 Starting Twitter monitoring...");
     
-    // Clear any existing interval
-    if (this.monitoringInterval) {
-      clearInterval(this.monitoringInterval);
-    }
-
-    // Start the monitoring interval
-    this.monitoringInterval = setInterval(async () => {
-      if (!this.isInitialized || !this.client) {
-        elizaLogger.warn("⚠️ Twitter client not ready, skipping monitoring cycle");
+    // Separate interval for interaction monitoring (every 30 seconds)
+    const interactionInterval = setInterval(async () => {
+      if (!this.client || !this.client.profile) {
+        elizaLogger.error("⚠️ Twitter client not ready yet");
         return;
       }
 
-      elizaLogger.info("👀 Starting monitoring cycle...");
+      const twitterUsername = this.client.profile?.username;
+      elizaLogger.info(`👀 Checking Twitter interactions for @${twitterUsername}...`);
 
       try {
-        await this.checkMentions();
-        await this.checkDirectMessages();
-        await this.checkReplies();
+        // Monitor mentions (every 30 seconds)
+        if (this.client.fetchSearchTweets) {
+          elizaLogger.info("🔍 Checking mentions...");
+          const mentions = await this.client.fetchSearchTweets(`@${twitterUsername}`, 20);
+          elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
+          if (mentions?.length > 0) {
+            for (const mention of mentions) {
+              await this.handleInteraction('mention', mention);
+            }
+          }
+        }
+
+        // Monitor DMs (every 30 seconds)
+        if (this.client.fetchDirectMessages) {
+          elizaLogger.info("🔍 Checking DMs...");
+          const messages = await this.client.fetchDirectMessages();
+          elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
+          if (messages?.length > 0) {
+            for (const message of messages) {
+              await this.handleInteraction('dm', message);
+            }
+          }
+        }
+
+        // Monitor replies (every 30 seconds)
+        if (this.client.fetchReplies) {
+          elizaLogger.info("🔍 Checking replies...");
+          const replies = await this.client.fetchReplies();
+          elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
+          if (replies?.length > 0) {
+            for (const reply of replies) {
+              await this.handleInteraction('reply', reply);
+            }
+          }
+        }
+
       } catch (error) {
-        elizaLogger.error("❌ Error in monitoring cycle:", error);
-      }
-    }, 30000); // Check every 30 seconds
-
-    // Start first check immediately
-    this.checkMentions().catch(error => elizaLogger.error("❌ Error in initial mentions check:", error));
-  }
-
-  private async checkMentions() {
-    if (!this.client) return;
-
-    elizaLogger.info("🔍 Checking mentions...");
-    try {
-      const mentions = await this.client.getMentions();
-      elizaLogger.info(`📨 Found ${mentions?.length || 0} mentions`);
-      
-      if (mentions?.length > 0) {
-        for (const mention of mentions) {
-          await this.handleInteraction('mention', mention);
+        elizaLogger.error("❌ Error in Twitter monitoring:", error);
+        if (error instanceof Error) {
+          elizaLogger.error("Error details:", {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
+          });
         }
       }
-    } catch (error) {
-      elizaLogger.error("❌ Error checking mentions:", error);
-    }
-  }
+    }, 30000); // Check interactions every 30 seconds
 
-  private async checkDirectMessages() {
-    if (!this.client) return;
-
-    elizaLogger.info("🔍 Checking direct messages...");
-    try {
-      const messages = await this.client.getDirectMessages();
-      elizaLogger.info(`📨 Found ${messages?.length || 0} DMs`);
-      
-      if (messages?.length > 0) {
-        for (const message of messages) {
-          await this.handleInteraction('dm', message);
-        }
-      }
-    } catch (error) {
-      elizaLogger.error("❌ Error checking DMs:", error);
-    }
-  }
-
-  private async checkReplies() {
-    if (!this.client) return;
-
-    elizaLogger.info("🔍 Checking replies...");
-    try {
-      const replies = await this.client.getReplies();
-      elizaLogger.info(`📨 Found ${replies?.length || 0} replies`);
-      
-      if (replies?.length > 0) {
-        for (const reply of replies) {
-          await this.handleInteraction('reply', reply);
-        }
-      }
-    } catch (error) {
-      elizaLogger.error("❌ Error checking replies:", error);
-    }
+    // Clean up on process exit
+    process.on('SIGINT', () => {
+      clearInterval(interactionInterval);
+      elizaLogger.info("🛑 Stopping Twitter monitoring...");
+      process.exit(0);
+    });
   }
 
   private async handleInteraction(type: 'mention' | 'dm' | 'reply', interaction: any) {
@@ -552,7 +534,8 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
 
 async function startAgent(character: ExtendedCharacter, directClient: DirectClient) {
   try {
-    elizaLogger.info("🚀 Starting agent...");
+    // Set up logging
+    elizaLogger.success("Starting auto-posting agent with webhook URL:", process.env.WEBHOOK_URL);
     
     character.id ??= stringToUuid(character.name);
     character.username ??= character.name;
@@ -580,20 +563,8 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
 
     directClient.registerAgent(runtime);
     
-    // Initialize Twitter monitoring
-    if (character.clients?.includes("twitter")) {
-      elizaLogger.info("📱 Initializing Twitter monitoring...");
-      const twitterManager = new MonitorOnlyTwitterManager(runtime);
-      
-      // Add to cleanup
-      process.on('SIGINT', () => {
-        if (twitterManager.monitoringInterval) {
-          clearInterval(twitterManager.monitoringInterval);
-        }
-        elizaLogger.info("🛑 Stopped Twitter monitoring");
-        process.exit(0);
-      });
-    }
+    // Start monitoring Twitter interactions immediately
+    new MonitorOnlyTwitterManager(runtime);
     
     // Separate post generation timing using environment variables
     const startPostGeneration = () => {
@@ -644,7 +615,11 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
     elizaLogger.success("✅ Auto-posting agent started successfully");
 
   } catch (error) {
-    elizaLogger.error("❌ Error starting agent:", error);
+    elizaLogger.error(
+      `Error starting agent for character ${character.name}:`,
+      error
+    );
+    console.error(error);
     throw error;
   }
 }
