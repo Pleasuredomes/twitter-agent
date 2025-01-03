@@ -108,12 +108,12 @@ class MonitorOnlyTwitterManager {
         password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
       });
       
-      this.client = await TwitterClientInterface.start(runtime);
+      const twitterClient = await TwitterClientInterface.start(runtime) as typeof Client;
       
-      if (this.client?.profile) {
+      if ((twitterClient as any).profile) {
         elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
-          username: this.client.profile.username,
-          id: this.client.profile.id
+          username: (twitterClient as any).profile.username,
+          id: (twitterClient as any).profile.id
         });
         this.isInitialized = true;
         this.startMonitoring();
@@ -389,16 +389,42 @@ async function initializeClients(
         dryRun: process.env.TWITTER_DRY_RUN
       });
 
-      const twitterClient = await TwitterClientInterface.start(runtime);
-      // Only log safe properties from the Twitter client
-      elizaLogger.info("Twitter client initialized with profile:", {
-        username: (twitterClient as any)?.profile?.username,
-        id: (twitterClient as any)?.profile?.id,
-        // Add other safe properties you want to log
+      const twitterClient = await TwitterClientInterface.start(runtime) as Client;
+      
+      // Add event listeners for all Twitter events
+      twitterClient.on('mention', (mention) => {
+        elizaLogger.info('📨 New mention received:', mention);
+        forwardToWebhook('mention', mention);
       });
+
+      twitterClient.on('dm', (message) => {
+        elizaLogger.info('📩 New DM received:', message);
+        forwardToWebhook('dm', message);
+      });
+
+      twitterClient.on('reply', (reply) => {
+        elizaLogger.info('↩️ New reply received:', reply);
+        forwardToWebhook('reply', reply);
+      });
+
+      twitterClient.on('response', (response) => {
+        elizaLogger.info('📤 Bot response:', response);
+        forwardToWebhook('response', response);
+      });
+
+      // Log any errors
+      twitterClient.on('error', (error) => {
+        elizaLogger.error('❌ Twitter client error:', {
+          message: error.message,
+          stack: error.stack,
+          timestamp: new Date().toISOString()
+        });
+        forwardToWebhook('error', error);
+      });
+
       if (twitterClient) {
         clients.push(twitterClient);
-        elizaLogger.success("Twitter client initialized successfully");
+        elizaLogger.success("✅ Twitter client initialized successfully with logging enabled");
       }
     } catch (error) {
       elizaLogger.error("Failed to initialize Twitter client. Full error details:", {
@@ -724,4 +750,30 @@ startAutoAgent().catch((error) => {
 process.on('SIGINT', () => {
   elizaLogger.log("\nGracefully shutting down...");
   process.exit(0);
-}); 
+});
+
+// Add this function to forward logs to webhook
+async function forwardToWebhook(type: string, data: any) {
+  try {
+    const webhookUrl = process.env.WEBHOOK_URL;
+    if (!webhookUrl) return;
+
+    const payload = {
+      event: `twitter_${type}`,
+      data: {
+        ...data,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    elizaLogger.info(`📤 Forwarded ${type} to webhook`);
+  } catch (error) {
+    elizaLogger.error(`❌ Failed to forward ${type} to webhook:`, error);
+  }
+} 
