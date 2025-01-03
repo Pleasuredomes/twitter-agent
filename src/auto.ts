@@ -173,10 +173,14 @@ async function initializeClients(
 
   if (clientTypes.includes("twitter")) {
     try {
+      // Set TWITTER_DRY_RUN to false since we want actual Twitter interaction
+      process.env.TWITTER_DRY_RUN = "false";
+
       elizaLogger.info("Starting Twitter client with credentials:", {
         username: process.env.TWITTER_USERNAME?.substring(0, 3) + "..." || "NOT SET",
         email: process.env.TWITTER_EMAIL?.substring(0, 3) + "..." || "NOT SET",
-        password: process.env.TWITTER_PASSWORD ? "[SET]" : "NOT SET"
+        password: process.env.TWITTER_PASSWORD ? "[SET]" : "NOT SET",
+        dryRun: process.env.TWITTER_DRY_RUN
       });
 
       const twitterClient = await TwitterClientInterface.start(runtime);
