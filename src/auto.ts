@@ -26,6 +26,7 @@ import { fileURLToPath } from "url";
 import { character } from "./character.ts";
 import type { DirectClient } from "@ai16z/client-direct";
 import yargs from "yargs";
+import { TwitterClientInterface } from "@ai16z/client-twitter";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,17 +60,25 @@ interface ExtendedRuntime extends AgentRuntime {
 
 function initializeDatabase(dataDir: string) {
   const db = new PostgresDatabaseAdapter({
-    connectionString: process.env.DATABASE_URL
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false // Only use this for development/testing
+    }
   });
   return db;
 }
 
-function initializeClients(
+async function initializeClients(
   character: Character,
   runtime: IAgentRuntime
 ) {
   const clients = [];
   const clientTypes = character.clients?.map((str) => str.toLowerCase()) || [];
+  
+  if (clientTypes.includes("twitter")) {
+    const twitterClient = await TwitterClientInterface.start(runtime);
+    if (twitterClient) clients.push(twitterClient);
+  }
   
   return clients;
 }
@@ -291,7 +300,7 @@ const startAutoAgent = async () => {
             post: []
           },
           plugins: loadedChar.plugins || [],
-          clients: [],  // We don't need any clients for auto-posting
+          clients: ["twitter"],  // Add Twitter to clients array
           settings: {
             secrets: loadedChar.settings?.secrets || {},
             voice: loadedChar.settings?.voice || {
