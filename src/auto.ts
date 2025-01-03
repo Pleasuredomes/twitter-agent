@@ -147,6 +147,76 @@ class MonitorOnlyTwitterManager {
   }
 
   private setupEventListeners(twitterClient: any) {
+    // Listen for new tweets found
+    twitterClient.on('newTweetFound', async (tweet: any) => {
+      elizaLogger.info('🔍 New Tweet found:', tweet.url);
+      elizaLogger.info('📦 Tweet data:', {
+        id: tweet.id,
+        url: tweet.url,
+        text: tweet.text
+      });
+      await this.handleInteraction('new_tweet_found', {
+        id: tweet.id,
+        url: tweet.url,
+        text: tweet.text,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Listen for tweet processing
+    twitterClient.on('processingTweet', async (tweetId: string) => {
+      elizaLogger.info('⚙️ Processing Tweet:', tweetId);
+      elizaLogger.info('📦 Processing data:', { tweetId });
+      await this.handleInteraction('processing_tweet', {
+        id: tweetId,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Listen for response generation
+    twitterClient.on('generatingResponse', async (data: any) => {
+      elizaLogger.info('💭 Generating response for tweet');
+      elizaLogger.info('📦 Generation data:', {
+        tweetId: data.tweetId,
+        query: data.query,
+        stage: data.stage
+      });
+      await this.handleInteraction('generating_response', {
+        tweet_id: data.tweetId,
+        query: data.query,
+        stage: data.stage,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Listen for response completion
+    twitterClient.on('responseGenerated', async (data: any) => {
+      elizaLogger.info('✅ Response generated');
+      elizaLogger.info('📦 Response data:', {
+        tweetId: data.tweetId,
+        response: data.response
+      });
+      await this.handleInteraction('response_generated', {
+        tweet_id: data.tweetId,
+        response: data.response,
+        timestamp: new Date().toISOString()
+      });
+    });
+
+    // Listen for action evaluation
+    twitterClient.on('evaluatingAction', async (data: any) => {
+      elizaLogger.info('⚖️ Evaluating action:', data.action);
+      elizaLogger.info('📦 Action data:', {
+        tweetId: data.tweetId,
+        action: data.action
+      });
+      await this.handleInteraction('evaluating_action', {
+        tweet_id: data.tweetId,
+        action: data.action,
+        timestamp: new Date().toISOString()
+      });
+    });
+
     // Listen for mentions
     twitterClient.on('mention', async (mention: any) => {
       elizaLogger.info('📨 Mention received:', mention);
@@ -289,7 +359,12 @@ class MonitorOnlyTwitterManager {
   }
 
   private async handleInteraction(type: string, interaction: any) {
-    const interactionId = `${type}-${interaction.id}`;
+    const interactionId = `${type}-${interaction.id || new Date().getTime()}`;
+    
+    elizaLogger.info('🎯 Handling interaction:', {
+      type,
+      id: interactionId
+    });
     
     if (this.processedInteractions.has(interactionId)) {
       elizaLogger.info(`🔄 Skipping already processed ${type}`);
@@ -306,15 +381,39 @@ class MonitorOnlyTwitterManager {
         return;
       }
 
-      // Prepare the interaction data
-      const interactionData = {
+      // Prepare the interaction data based on type
+      let interactionData: any = {
         type,
-        id: interaction.id,
-        text: interaction.text || interaction.message,
-        author: interaction.author?.username || interaction.sender?.username,
-        timestamp: new Date().toISOString(),
-        raw_data: interaction // Include the raw interaction data for complete logging
+        timestamp: new Date().toISOString()
       };
+
+      // Add type-specific data
+      switch (type) {
+        case 'new_tweet_found':
+        case 'processing_tweet':
+        case 'generating_response':
+        case 'response_generated':
+        case 'evaluating_action':
+          interactionData = {
+            ...interactionData,
+            ...interaction
+          };
+          break;
+        default:
+          // Handle regular Twitter interactions
+          interactionData = {
+            ...interactionData,
+            id: interaction.id,
+            text: interaction.text || interaction.message,
+            author: interaction.author?.username || interaction.sender?.username,
+            raw_data: interaction
+          };
+      }
+
+      elizaLogger.info('📤 Preparing webhook payload:', {
+        event: `twitter_${type}`,
+        data: interactionData
+      });
 
       // Send to webhook
       await this.sendToWebhook({
@@ -322,12 +421,12 @@ class MonitorOnlyTwitterManager {
         data: interactionData
       }, webhookUrl);
 
-      // If this is an interaction that requires a response, generate one
+      // Generate response only for interactive types
       if (['mention', 'dm', 'reply'].includes(type)) {
+        elizaLogger.info('🤖 Generating response for interactive type:', type);
         const response = await this.generateResponse(interaction);
         if (response) {
-          // Log the response
-          await this.sendToWebhook({
+          const responsePayload = {
             event: `twitter_response`,
             data: {
               original_interaction: interactionData,
@@ -336,21 +435,24 @@ class MonitorOnlyTwitterManager {
                 timestamp: new Date().toISOString()
               }
             }
-          }, webhookUrl);
+          };
+          elizaLogger.info('📤 Preparing response webhook payload:', responsePayload);
+          await this.sendToWebhook(responsePayload, webhookUrl);
         }
       }
 
     } catch (error) {
       elizaLogger.error(`❌ Error handling ${type}:`, error);
-      // Send error to webhook
-      await this.sendToWebhook({
+      const errorPayload = {
         event: 'twitter_interaction_error',
         data: {
           type,
           error: error instanceof Error ? error.message : error,
           timestamp: new Date().toISOString()
         }
-      }, process.env.WEBHOOK_URL || '');
+      };
+      elizaLogger.error('📤 Sending error webhook payload:', errorPayload);
+      await this.sendToWebhook(errorPayload, process.env.WEBHOOK_URL || '');
     }
   }
 
@@ -362,7 +464,12 @@ class MonitorOnlyTwitterManager {
       tweet: process.env.WEBHOOK_URL_TWEETS,
       like: process.env.WEBHOOK_URL_LIKES,
       retweet: process.env.WEBHOOK_URL_RETWEETS,
-      follow: process.env.WEBHOOK_URL_FOLLOWS
+      follow: process.env.WEBHOOK_URL_FOLLOWS,
+      new_tweet_found: process.env.WEBHOOK_URL_TWEETS,
+      processing_tweet: process.env.WEBHOOK_URL_TWEETS,
+      generating_response: process.env.WEBHOOK_URL_TWEETS,
+      response_generated: process.env.WEBHOOK_URL_TWEETS,
+      evaluating_action: process.env.WEBHOOK_URL_TWEETS
     }[type];
 
     return typeSpecificUrl || process.env.WEBHOOK_URL;
@@ -379,6 +486,8 @@ class MonitorOnlyTwitterManager {
       event: payload.event,
       type: payload.data?.type
     });
+
+    elizaLogger.info('📦 Full webhook payload:', JSON.stringify(payload, null, 2));
 
     try {
       const response = await fetch(webhookUrl, {
@@ -398,7 +507,8 @@ class MonitorOnlyTwitterManager {
       elizaLogger.error("❌ Webhook error:", {
         event: payload.event,
         type: payload.data?.type,
-        error: error instanceof Error ? error.message : error
+        error: error instanceof Error ? error.message : error,
+        payload: JSON.stringify(payload, null, 2)
       });
       throw error;
     }
