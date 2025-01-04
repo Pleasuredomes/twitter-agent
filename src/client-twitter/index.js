@@ -342,24 +342,43 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
   const tweetChunks = splitTweetContent(content.text);
   const sentTweets = [];
   let previousTweetId = inReplyTo;
+
   for (const chunk of tweetChunks) {
-    const result = await client.requestQueue.add(
-      async () => await client.twitterClient.sendTweet(
-        chunk.trim(),
-        previousTweetId
-      )
-    );
-    const body = await result.json();
-    const tweetResult = body.data.create_tweet.tweet_results.result;
+    // Create tweet data instead of sending to Twitter
+    const tweetData = {
+      id: Date.now().toString(),
+      text: chunk.trim(),
+      username: twitterUsername,
+      name: client.profile.screenName,
+      timestamp: Date.now(),
+      inReplyToStatusId: previousTweetId,
+      conversationId: roomId,
+      permanentUrl: `https://twitter.com/${twitterUsername}/status/${Date.now()}`
+    };
+
+    // Send to webhook
+    await client.webhookHandler.sendToWebhook({
+      type: 'agent_reply',
+      data: {
+        tweet: tweetData,
+        context: {
+          isThreaded: tweetChunks.length > 1,
+          partNumber: sentTweets.length + 1,
+          totalParts: tweetChunks.length,
+          inReplyTo: previousTweetId
+        }
+      },
+      timestamp: Date.now()
+    });
+
     const finalTweet = {
-      id: tweetResult.rest_id,
-      text: tweetResult.legacy.full_text,
-      conversationId: tweetResult.legacy.conversation_id_str,
-      //createdAt:
-      timestamp: tweetResult.timestamp * 1e3,
-      userId: tweetResult.legacy.user_id_str,
-      inReplyToStatusId: tweetResult.legacy.in_reply_to_status_id_str,
-      permanentUrl: `https://twitter.com/${twitterUsername}/status/${tweetResult.rest_id}`,
+      id: tweetData.id,
+      text: tweetData.text,
+      conversationId: tweetData.conversationId,
+      timestamp: tweetData.timestamp,
+      userId: client.profile.id,
+      inReplyToStatusId: tweetData.inReplyToStatusId,
+      permanentUrl: tweetData.permanentUrl,
       hashtags: [],
       mentions: [],
       photos: [],
@@ -367,10 +386,12 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
       urls: [],
       videos: []
     };
+
     sentTweets.push(finalTweet);
     previousTweetId = finalTweet.id;
-    await wait(1e3, 2e3);
+    await wait(1000, 2000);
   }
+
   const memories = sentTweets.map((tweet) => ({
     id: stringToUuid2(tweet.id + "-" + client.runtime.agentId),
     agentId: client.runtime.agentId,
@@ -385,8 +406,9 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
     },
     roomId,
     embedding: embeddingZeroVector2,
-    createdAt: tweet.timestamp * 1e3
+    createdAt: tweet.timestamp
   }));
+
   return memories;
 }
 function splitTweetContent(content) {
