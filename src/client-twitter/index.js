@@ -682,31 +682,33 @@ var TwitterInteractionClient = class {
     thread
   }) {
     try {
-      // Log and send to webhook for replies
-      if (tweet.referenced_tweets?.some(ref => ref.type === 'replied_to')) {
-        await this.webhookHandler.sendToWebhook({
-          type: 'reply',
-          data: {
-            tweet,
-            message,
-            thread
+      // Send initial webhook notification for the incoming tweet
+      const eventType = tweet.referenced_tweets?.some(ref => ref.type === 'replied_to') ? 'reply' : 'mention';
+      await this.webhookHandler.sendToWebhook({
+        type: eventType,
+        data: {
+          tweet: {
+            id: tweet.id,
+            text: tweet.text,
+            username: tweet.username,
+            name: tweet.name,
+            permanentUrl: tweet.permanentUrl,
+            timestamp: tweet.timestamp,
+            inReplyToStatusId: tweet.inReplyToStatusId
           },
-          timestamp: Date.now()
-        });
-      }
-
-      // Log and send to webhook for mentions
-      if (tweet.text.includes(`@${this.runtime.character.username}`)) {
-        await this.webhookHandler.sendToWebhook({
-          type: 'mention',
-          data: {
-            tweet,
-            message,
-            thread
-          },
-          timestamp: Date.now()
-        });
-      }
+          thread: thread.map(t => ({
+            id: t.id,
+            text: t.text,
+            username: t.username,
+            timestamp: t.timestamp
+          })),
+          context: {
+            foundAt: new Date().toISOString(),
+            type: 'incoming'
+          }
+        },
+        timestamp: Date.now()
+      });
 
       // Process the tweet normally
       const formatTweet = (tweet2) => {
@@ -783,6 +785,38 @@ Text: ${tweet2.text}
         context: shouldRespondContext,
         modelClass: ModelClass2.MEDIUM
       });
+
+      // Send webhook with the decision
+      await this.webhookHandler.sendToWebhook({
+        type: eventType,
+        data: {
+          tweet: {
+            id: tweet.id,
+            text: tweet.text,
+            username: tweet.username,
+            name: tweet.name,
+            permanentUrl: tweet.permanentUrl,
+            timestamp: tweet.timestamp,
+            inReplyToStatusId: tweet.inReplyToStatusId
+          },
+          thread: thread.map(t => ({
+            id: t.id,
+            text: t.text,
+            username: t.username,
+            timestamp: t.timestamp
+          })),
+          decision: {
+            shouldRespond,
+            reason: `Agent decided to ${shouldRespond.toLowerCase()}`
+          },
+          context: {
+            foundAt: new Date().toISOString(),
+            type: 'decision'
+          }
+        },
+        timestamp: Date.now()
+      });
+
       if (shouldRespond !== "RESPOND") {
         elizaLogger.log("Not responding to message");
         return { text: "Response Decision:", action: shouldRespond };
@@ -797,6 +831,43 @@ Text: ${tweet2.text}
         context,
         modelClass: ModelClass2.MEDIUM
       });
+
+      // Send webhook with the generated response
+      await this.webhookHandler.sendToWebhook({
+        type: eventType,
+        data: {
+          tweet: {
+            id: tweet.id,
+            text: tweet.text,
+            username: tweet.username,
+            name: tweet.name,
+            permanentUrl: tweet.permanentUrl
+          },
+          response: {
+            text: response.text,
+            action: response.action,
+            timestamp: Date.now(),
+            context: {
+              shouldRespond,
+              thread: thread.map(t => ({
+                id: t.id,
+                text: t.text,
+                username: t.username
+              }))
+            }
+          },
+          agent: {
+            name: this.runtime.character.name,
+            username: this.runtime.getSetting("TWITTER_USERNAME")
+          },
+          context: {
+            type: 'generated_response',
+            generatedAt: new Date().toISOString()
+          }
+        },
+        timestamp: Date.now()
+      });
+
       const removeQuotes = (str) => str.replace(/^['"](.*)['"]$/, "$1");
       const stringId = stringToUuid3(tweet.id + "-" + this.runtime.agentId);
       response.inReplyTo = stringId;
@@ -815,9 +886,9 @@ Text: ${tweet2.text}
           };
           const responseMessages = await callback(response);
 
-          // Send the generated response to webhook
+          // Send webhook notification for the AI's response
           await this.webhookHandler.sendToWebhook({
-            type: 'agent_reply',
+            type: eventType, // Use same event type as incoming
             data: {
               original_tweet: {
                 id: tweet.id,
@@ -842,6 +913,10 @@ Text: ${tweet2.text}
               agent: {
                 name: this.runtime.character.name,
                 username: this.runtime.getSetting("TWITTER_USERNAME")
+              },
+              context: {
+                type: 'response',
+                generatedAt: new Date().toISOString()
               }
             },
             timestamp: Date.now()
