@@ -24,12 +24,12 @@ import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { character } from "./character.ts";
 import type { DirectClient } from "@ai16z/client-direct";
 import yargs from "yargs";
 import { TwitterClientInterface } from "./twitter-client";
 import { TwitterClient } from "./twitter-client";
 import { Tweet } from "./twitter-client/types";
+import { character } from "./character.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,7 +105,7 @@ class MonitorOnlyTwitterManager {
       elizaLogger.info("🔑 Using Twitter credentials:", {
         username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
         email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
-        password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
+        password: process.env.TWITTER_PASSWORD ? "[SET]" : "NOT SET"
       });
       
       this.client = await TwitterClientInterface.start(runtime);
@@ -123,8 +123,7 @@ class MonitorOnlyTwitterManager {
     } catch (error) {
       elizaLogger.error("❌ Failed to initialize Twitter client:", {
         error: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined,
-        details: error
+        stack: error instanceof Error ? error.stack : undefined
       });
       
       if (this.initializationRetries < this.MAX_RETRIES) {
@@ -280,61 +279,6 @@ class MonitorOnlyTwitterManager {
     }
   }
 
-  private getWebhookUrl(type: 'mention' | 'dm' | 'reply'): string | undefined {
-    const url = {
-      mention: process.env.WEBHOOK_URL_MENTIONS,
-      dm: process.env.WEBHOOK_URL_DMS,
-      reply: process.env.WEBHOOK_URL_REPLIES
-    }[type];
-
-    if (!url) {
-      elizaLogger.warn(`⚠️ No webhook URL configured for ${type}, using default webhook`);
-      return process.env.WEBHOOK_URL;
-    }
-
-    elizaLogger.info(`🎯 Using webhook URL for ${type}: ${url}`);
-    return url;
-  }
-
-  private async sendToWebhook(payload: any, webhookUrl: string) {
-    if (!webhookUrl) {
-      elizaLogger.warn("⚠️ No webhook URL provided");
-      return;
-    }
-
-    elizaLogger.info(`🌐 Sending to webhook:`, {
-      url: webhookUrl,
-      event: payload.event,
-      type: payload.data?.type
-    });
-
-    elizaLogger.info("📦 Full payload:", JSON.stringify(payload, null, 2));
-
-    try {
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const responseText = await response.text();
-      elizaLogger.info(`📥 Webhook response (${response.status}):`, responseText || "(empty response)");
-
-      if (!response.ok) {
-        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
-      }
-
-      elizaLogger.success(`✅ Successfully sent ${payload.event} to webhook`);
-    } catch (error) {
-      elizaLogger.error("❌ Webhook error:", {
-        event: payload.event,
-        type: payload.data?.type,
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
-      throw error;
-    }
-  }
-
   private async generateResponse(interaction: any): Promise<string> {
     // Use the runtime's message generation capability
     try {
@@ -383,12 +327,20 @@ async function initializeClients(
       });
 
       const twitterClient = await TwitterClientInterface.start(runtime);
+      
       if (twitterClient) {
         clients.push(twitterClient);
         elizaLogger.success("Twitter client initialized successfully");
       }
     } catch (error) {
       elizaLogger.error("Failed to initialize Twitter client:", error);
+      if (error instanceof Error) {
+        elizaLogger.error("Error details:", {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        });
+      }
     }
   }
 
