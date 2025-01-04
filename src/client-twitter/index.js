@@ -7,7 +7,7 @@ import {
   stringToUuid
 } from "@ai16z/eliza";
 import { elizaLogger } from "@ai16z/eliza";
-import { WebhookHandler } from './webhook';
+import { WebhookHandler } from './webhook.js';
 var twitterPostTemplate = `{{timeline}}
 
 # Knowledge
