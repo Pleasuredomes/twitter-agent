@@ -3,6 +3,7 @@ import fetch from "node-fetch";
 
 export class WebhookHandler {
   constructor(webhookUrl, logToConsole = true, runtime) {
+    // Set up different webhook URLs for each event type
     this.webhookUrls = {
       post: webhookUrl || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook',
       reply: process.env.WEBHOOK_URL_REPLIES || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/replies',
@@ -11,84 +12,84 @@ export class WebhookHandler {
     };
     this.logToConsole = logToConsole;
     this.runtime = runtime;
-    this.webhookLogs = [];
   }
 
   async sendToWebhook(event) {
     try {
-      const webhookUrl = this.webhookUrls[event.type] || this.webhookUrls.post;
+      // Get the appropriate webhook URL for the event type
+      const webhookUrl = this.webhookUrls[event.type];
       
       if (!webhookUrl) {
-        elizaLogger.warn(`No webhook URL configured for event type: ${event.type}`);
+        elizaLogger.error(`No webhook URL configured for event type: ${event.type}`);
         return;
       }
 
-      const payload = {
+      // Log the outgoing payload
+      elizaLogger.log('Webhook Outgoing Payload:', {
         url: webhookUrl,
         type: event.type,
-        timestamp: event.timestamp || Date.now(),
-        payload: JSON.stringify(event.data, null, 2)
-      };
-
-      if (this.logToConsole) {
-        elizaLogger.info('Webhook Outgoing Payload:', JSON.stringify(payload, null, 2));
-      }
+        timestamp: new Date(event.timestamp).toISOString(),
+        payload: JSON.stringify(event, null, 2)
+      });
 
       const response = await fetch(webhookUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(event.data)
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(event)
       });
 
-      const responseData = {
+      // Log the response
+      const responseBody = await response.text();
+      elizaLogger.log('Webhook Response:', {
         status: response.status,
         statusText: response.statusText,
         headers: Object.fromEntries(response.headers.entries()),
-        body: await response.text()
-      };
-
-      if (this.logToConsole) {
-        elizaLogger.info('Webhook Response:', JSON.stringify(responseData, null, 2));
-      }
-
-      // Store log
-      this.webhookLogs.push({
-        timestamp: Date.now(),
-        success: response.ok,
-        payload,
-        response: responseData
+        body: responseBody
       });
 
-      if (response.ok) {
-        elizaLogger.success(`Successfully sent ${event.type} event to webhook: ${webhookUrl}`);
-      } else {
-        throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Webhook request failed with status ${response.status}: ${responseBody}`);
       }
 
-      return responseData;
-    } catch (error) {
-      const errorLog = {
-        timestamp: Date.now(),
+      elizaLogger.log(`Successfully sent ${event.type} event to webhook: ${webhookUrl}`);
+
+      // Store webhook logs in cache for debugging
+      await this.storeWebhookLog({
+        timestamp: event.timestamp,
         type: event.type,
-        error: error.message,
-        stack: error.stack
-      };
-
-      elizaLogger.error('Webhook Error:', errorLog);
-      
-      // Store error log
-      this.webhookLogs.push({
-        timestamp: Date.now(),
-        success: false,
-        error: errorLog
+        url: webhookUrl,
+        payload: event,
+        response: {
+          status: response.status,
+          statusText: response.statusText,
+          body: responseBody
+        }
       });
 
-      // Don't throw, just log the error
-      return null;
+    } catch (error) {
+      elizaLogger.error('Error sending webhook notification:', error);
+      
+      // Store failed webhook attempt in cache
+      await this.storeWebhookLog({
+        timestamp: event.timestamp,
+        type: event.type,
+        url: this.webhookUrls[event.type],
+        payload: event,
+        error: error.message
+      });
     }
   }
 
-  getWebhookLogs() {
-    return this.webhookLogs;
+  async storeWebhookLog(logData) {
+    try {
+      const key = `webhook_logs/${logData.type}/${logData.timestamp}`;
+      if (this.runtime?.cacheManager) {
+        await this.runtime.cacheManager.set(key, logData);
+      }
+    } catch (error) {
+      elizaLogger.error('Error storing webhook log:', error);
+    }
   }
 } 

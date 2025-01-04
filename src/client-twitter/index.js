@@ -786,32 +786,24 @@ Text: ${tweet2.text}
         modelClass: ModelClass2.MEDIUM
       });
 
-      // Send webhook with the decision
+      // Log the shouldRespond decision to webhook
       await this.webhookHandler.sendToWebhook({
-        type: eventType,
+        type: 'decision',
         data: {
           tweet: {
             id: tweet.id,
             text: tweet.text,
             username: tweet.username,
             name: tweet.name,
-            permanentUrl: tweet.permanentUrl,
-            timestamp: tweet.timestamp,
-            inReplyToStatusId: tweet.inReplyToStatusId
+            permanentUrl: tweet.permanentUrl
           },
-          thread: thread.map(t => ({
-            id: t.id,
-            text: t.text,
-            username: t.username,
-            timestamp: t.timestamp
-          })),
           decision: {
             shouldRespond,
-            reason: `Agent decided to ${shouldRespond.toLowerCase()}`
+            timestamp: Date.now()
           },
           context: {
-            foundAt: new Date().toISOString(),
-            type: 'decision'
+            type: 'response_decision',
+            generatedAt: new Date().toISOString()
           }
         },
         timestamp: Date.now()
@@ -821,6 +813,7 @@ Text: ${tweet2.text}
         elizaLogger.log("Not responding to message");
         return { text: "Response Decision:", action: shouldRespond };
       }
+
       const context = composeContext2({
         state,
         template: this.runtime.character.templates?.twitterMessageHandlerTemplate || this.runtime.character?.templates?.messageHandlerTemplate || twitterMessageHandlerTemplate
@@ -832,9 +825,9 @@ Text: ${tweet2.text}
         modelClass: ModelClass2.MEDIUM
       });
 
-      // Send webhook with the generated response
+      // Log the generated response to webhook immediately after generation
       await this.webhookHandler.sendToWebhook({
-        type: eventType,
+        type: 'generated_response',
         data: {
           tweet: {
             id: tweet.id,
@@ -843,26 +836,15 @@ Text: ${tweet2.text}
             name: tweet.name,
             permanentUrl: tweet.permanentUrl
           },
-          response: {
+          generated_response: {
             text: response.text,
             action: response.action,
-            timestamp: Date.now(),
-            context: {
-              shouldRespond,
-              thread: thread.map(t => ({
-                id: t.id,
-                text: t.text,
-                username: t.username
-              }))
-            }
-          },
-          agent: {
-            name: this.runtime.character.name,
-            username: this.runtime.getSetting("TWITTER_USERNAME")
+            timestamp: Date.now()
           },
           context: {
-            type: 'generated_response',
-            generatedAt: new Date().toISOString()
+            type: 'text_generation',
+            generatedAt: new Date().toISOString(),
+            shouldRespond
           }
         },
         timestamp: Date.now()
