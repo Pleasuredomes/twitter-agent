@@ -551,7 +551,7 @@ var TwitterInteractionClient = class {
     handleTwitterInteractionsLoop();
   }
   async handleTwitterInteractions() {
-    elizaLogger3.log("Checking Twitter interactions");
+    elizaLogger.log("Checking Twitter interactions");
     const twitterUsername = this.client.profile.username;
     try {
       const tweetCandidates = (await this.client.fetchSearchTweets(
@@ -561,9 +561,38 @@ var TwitterInteractionClient = class {
       )).tweets;
       const uniqueTweetCandidates = [...new Set(tweetCandidates)];
       uniqueTweetCandidates.sort((a, b) => a.id.localeCompare(b.id)).filter((tweet) => tweet.userId !== this.client.profile.id);
+
       for (const tweet of uniqueTweetCandidates) {
         if (!this.client.lastCheckedTweetId || parseInt(tweet.id) > this.client.lastCheckedTweetId) {
-          elizaLogger3.log("New Tweet found", tweet.permanentUrl);
+          elizaLogger.log("New Tweet found", tweet.permanentUrl);
+
+          // Determine the event type
+          let eventType = 'mention';
+          if (tweet.referenced_tweets?.some(ref => ref.type === 'replied_to')) {
+            eventType = 'reply';
+          }
+
+          // Send to webhook immediately when tweet is found
+          await this.webhookHandler.sendToWebhook({
+            type: eventType,
+            data: {
+              tweet: {
+                id: tweet.id,
+                text: tweet.text,
+                username: tweet.username,
+                name: tweet.name,
+                permanentUrl: tweet.permanentUrl,
+                timestamp: tweet.timestamp,
+                inReplyToStatusId: tweet.inReplyToStatusId
+              },
+              context: {
+                foundAt: new Date().toISOString(),
+                searchQuery: `@${twitterUsername}`
+              }
+            },
+            timestamp: Date.now()
+          });
+
           const roomId = stringToUuid3(
             tweet.conversationId + "-" + this.runtime.agentId
           );
@@ -575,28 +604,54 @@ var TwitterInteractionClient = class {
             tweet.name,
             "twitter"
           );
+
           const thread = await buildConversationThread(
             tweet,
             this.client
           );
+
           const message = {
             content: { text: tweet.text },
             agentId: this.runtime.agentId,
             userId: userIdUUID,
             roomId
           };
+
           await this.handleTweet({
             tweet,
             message,
             thread
           });
+
           this.client.lastCheckedTweetId = parseInt(tweet.id);
         }
       }
+
+      // Check for DMs here if needed
+      // const dms = await this.client.getDirectMessages();
+      // for (const dm of dms) {
+      //   await this.webhookHandler.sendToWebhook({
+      //     type: 'dm',
+      //     data: dm,
+      //     timestamp: Date.now()
+      //   });
+      // }
+
       await this.client.cacheLatestCheckedTweetId();
-      elizaLogger3.log("Finished checking Twitter interactions");
+      elizaLogger.log("Finished checking Twitter interactions");
     } catch (error) {
-      elizaLogger3.error("Error handling Twitter interactions:", error);
+      elizaLogger.error("Error handling Twitter interactions:", error);
+      
+      // Log error to webhook
+      await this.webhookHandler.sendToWebhook({
+        type: 'error',
+        data: {
+          error: error.message,
+          stack: error.stack,
+          context: 'handleTwitterInteractions'
+        },
+        timestamp: Date.now()
+      });
     }
   }
   async handleTweet({
@@ -646,7 +701,7 @@ var TwitterInteractionClient = class {
         homeTimeline = await this.client.fetchHomeTimeline(50);
         await this.client.cacheTimeline(homeTimeline);
       }
-      elizaLogger3.debug("Thread: ", thread);
+      elizaLogger.debug("Thread: ", thread);
       const formattedConversation = thread.map(
         (tweet2) => `@${tweet2.username} (${new Date(
           tweet2.timestamp * 1e3
@@ -658,7 +713,7 @@ var TwitterInteractionClient = class {
         })}):
           ${tweet2.text}`
       ).join("\n\n");
-      elizaLogger3.debug("formattedConversation: ", formattedConversation);
+      elizaLogger.debug("formattedConversation: ", formattedConversation);
       const formattedHomeTimeline = `# ${this.runtime.character.name}'s Home Timeline
 
 ` + homeTimeline.map((tweet2) => {
@@ -678,7 +733,7 @@ Text: ${tweet2.text}
       const tweetId = stringToUuid3(tweet.id + "-" + this.runtime.agentId);
       const tweetExists = await this.runtime.messageManager.getMemoryById(tweetId);
       if (!tweetExists) {
-        elizaLogger3.log("tweet does not exist, saving");
+        elizaLogger.log("tweet does not exist, saving");
         const userIdUUID = stringToUuid3(tweet.userId);
         const roomId = stringToUuid3(tweet.conversationId);
         const message2 = {
@@ -707,14 +762,14 @@ Text: ${tweet2.text}
         modelClass: ModelClass2.MEDIUM
       });
       if (shouldRespond !== "RESPOND") {
-        elizaLogger3.log("Not responding to message");
+        elizaLogger.log("Not responding to message");
         return { text: "Response Decision:", action: shouldRespond };
       }
       const context = composeContext2({
         state,
         template: this.runtime.character.templates?.twitterMessageHandlerTemplate || this.runtime.character?.templates?.messageHandlerTemplate || twitterMessageHandlerTemplate
       });
-      elizaLogger3.debug("Interactions prompt:\n" + context);
+      elizaLogger.debug("Interactions prompt:\n" + context);
       const response = await generateMessageResponse({
         runtime: this.runtime,
         context,
@@ -769,11 +824,11 @@ ${response.text}`;
           );
           await wait();
         } catch (error) {
-          elizaLogger3.error(`Error sending response tweet: ${error}`);
+          elizaLogger.error(`Error sending response tweet: ${error}`);
         }
       }
     } catch (error) {
-      elizaLogger3.error('Error handling tweet:', error);
+      elizaLogger.error('Error handling tweet:', error);
     }
   }
   async handleDirectMessage(message) {
@@ -788,24 +843,24 @@ ${response.text}`;
       // Process the DM normally
       // ... existing DM handling code ...
     } catch (error) {
-      elizaLogger3.error('Error handling direct message:', error);
+      elizaLogger.error('Error handling direct message:', error);
     }
   }
   async buildConversationThread(tweet, maxReplies = 10) {
     const thread = [];
     const visited = /* @__PURE__ */ new Set();
     async function processThread(currentTweet, depth = 0) {
-      elizaLogger3.log("Processing tweet:", {
+      elizaLogger.log("Processing tweet:", {
         id: currentTweet.id,
         inReplyToStatusId: currentTweet.inReplyToStatusId,
         depth
       });
       if (!currentTweet) {
-        elizaLogger3.log("No current tweet found for thread building");
+        elizaLogger.log("No current tweet found for thread building");
         return;
       }
       if (depth >= maxReplies) {
-        elizaLogger3.log("Reached maximum reply depth", depth);
+        elizaLogger.log("Reached maximum reply depth", depth);
         return;
       }
       const memory = await this.runtime.messageManager.getMemoryById(
@@ -843,18 +898,18 @@ ${response.text}`;
         });
       }
       if (visited.has(currentTweet.id)) {
-        elizaLogger3.log("Already visited tweet:", currentTweet.id);
+        elizaLogger.log("Already visited tweet:", currentTweet.id);
         return;
       }
       visited.add(currentTweet.id);
       thread.unshift(currentTweet);
-      elizaLogger3.debug("Current thread state:", {
+      elizaLogger.debug("Current thread state:", {
         length: thread.length,
         currentDepth: depth,
         tweetId: currentTweet.id
       });
       if (currentTweet.inReplyToStatusId) {
-        elizaLogger3.log(
+        elizaLogger.log(
           "Fetching parent tweet:",
           currentTweet.inReplyToStatusId
         );
@@ -863,32 +918,32 @@ ${response.text}`;
             currentTweet.inReplyToStatusId
           );
           if (parentTweet) {
-            elizaLogger3.log("Found parent tweet:", {
+            elizaLogger.log("Found parent tweet:", {
               id: parentTweet.id,
               text: parentTweet.text?.slice(0, 50)
             });
             await processThread(parentTweet, depth + 1);
           } else {
-            elizaLogger3.log(
+            elizaLogger.log(
               "No parent tweet found for:",
               currentTweet.inReplyToStatusId
             );
           }
         } catch (error) {
-          elizaLogger3.log("Error fetching parent tweet:", {
+          elizaLogger.log("Error fetching parent tweet:", {
             tweetId: currentTweet.inReplyToStatusId,
             error
           });
         }
       } else {
-        elizaLogger3.log(
+        elizaLogger.log(
           "Reached end of reply chain at:",
           currentTweet.id
         );
       }
     }
     await processThread.bind(this)(tweet, 0);
-    elizaLogger3.debug("Final thread built:", {
+    elizaLogger.debug("Final thread built:", {
       totalTweets: thread.length,
       tweetIds: thread.map((t) => ({
         id: t.id,
