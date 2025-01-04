@@ -2,7 +2,7 @@ import { PostgresDatabaseAdapter } from "@ai16z/adapter-postgres";
 import { DirectClientInterface } from "@ai16z/client-direct";
 import { AutoClientInterface } from "@ai16z/client-auto";
 import { TelegramClientInterface } from "@ai16z/client-telegram";
-import { TwitterClientInterface } from "@ai16z/client-twitter";
+import { TwitterClientInterface } from "./client-twitter";
 import {
   DbCacheAdapter,
   defaultCharacter,

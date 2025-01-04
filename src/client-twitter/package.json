@@ -1,0 +1,24 @@
+{
+    "name": "@ai16z/client-twitter",
+    "version": "0.1.4-alpha.3",
+    "main": "dist/index.js",
+    "type": "module",
+    "types": "dist/index.d.ts",
+    "dependencies": {
+        "@ai16z/eliza": "0.1.4-alpha.3",
+        "agent-twitter-client": "0.0.13",
+        "glob": "11.0.0",
+        "zod": "3.23.8"
+    },
+    "devDependencies": {
+        "tsup": "^8.3.5"
+    },
+    "scripts": {
+        "build": "tsup --format esm --dts",
+        "dev": "tsup --watch"
+    },
+    "peerDependencies": {
+        "whatwg-url": "7.1.0"
+    },
+    "gitHead": "019193678c2dac938f520d023f9f908a339fed8a"
+}
