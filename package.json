@@ -10,22 +10,26 @@
     "stop:service:all": "pm2 stop all",
     "auto": "node --loader ts-node/esm src/auto.ts",
     "rebuild": "npm rebuild better-sqlite3 --build-from-source",
-    "playwright:install": "playwright install chromium --with-deps"
+    "playwright:install": "playwright install chromium --with-deps",
+    "render:build": "pnpm install && pnpm playwright:install",
+    "render:start": "pnpm auto"
   },
   "dependencies": {
     "@ai16z/adapter-postgres": "v0.1.4-alpha.3",
     "@ai16z/client-direct": "v0.1.4-alpha.3",
     "@ai16z/client-telegram": "v0.1.4-alpha.3",
-    "@ai16z/client-twitter": "v0.1.4-alpha.3",
     "@ai16z/eliza": "v0.1.4-alpha.3",
     "@ai16z/plugin-bootstrap": "v0.1.4-alpha.3",
     "@ai16z/plugin-image-generation": "v0.1.4-alpha.3",
     "@ai16z/plugin-node": "v0.1.4-alpha.3",
     "@ai16z/plugin-solana": "v0.1.4-alpha.3",
     "@ai16z/plugin-starknet": "v0.1.4-alpha.3",
+    "agent-twitter-client": "^1.0.0",
+    "better-sqlite3": "^9.4.3",
     "readline": "^1.3.0",
     "ws": "^8.18.0",
-    "yargs": "17.7.2"
+    "yargs": "17.7.2",
+    "zod": "^3.22.4"
   },
   "engines": {
     "node": ">=22"

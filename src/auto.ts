@@ -27,9 +27,9 @@ import { fileURLToPath } from "url";
 import { character } from "./character.ts";
 import type { DirectClient } from "@ai16z/client-direct";
 import yargs from "yargs";
-import TwitterManager from "@ai16z/client-twitter";
-import { TwitterClientInterface } from "@ai16z/client-twitter";
-import Client from "@ai16z/client-twitter";
+import { TwitterClientInterface } from "./twitter-client";
+import { TwitterClient } from "./twitter-client";
+import { Tweet } from "./twitter-client/types";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -383,48 +383,12 @@ async function initializeClients(
       });
 
       const twitterClient = await TwitterClientInterface.start(runtime);
-      // Only log safe properties from the Twitter client
-      elizaLogger.info("Twitter client initialized with profile:", {
-        username: (twitterClient as any)?.profile?.username,
-        id: (twitterClient as any)?.profile?.id,
-        // Add other safe properties you want to log
-      });
       if (twitterClient) {
         clients.push(twitterClient);
         elizaLogger.success("Twitter client initialized successfully");
       }
     } catch (error) {
-      elizaLogger.error("Failed to initialize Twitter client. Full error details:", {
-        name: error?.name,
-        message: error?.message,
-        stack: error?.stack,
-        fullError: error,
-        errorObject: JSON.stringify(error, null, 2),
-        errorProperties: Object.keys(error || {}),
-        innerError: error?.innerError ? {
-          name: error.innerError.name,
-          message: error.innerError.message,
-          stack: error.innerError.stack
-        } : 'No inner error',
-        cause: error?.cause ? {
-          name: error.cause.name,
-          message: error.cause.message,
-          stack: error.cause.stack
-        } : 'No cause'
-      });
-
-      // Try to parse error message if it's JSON
-      try {
-        if (typeof error?.message === 'string' && error.message.startsWith('{')) {
-          const parsedError = JSON.parse(error.message);
-          elizaLogger.error("Parsed error message:", parsedError);
-          if (parsedError.errors) {
-            elizaLogger.error("Twitter API errors:", parsedError.errors);
-          }
-        }
-      } catch (e) {
-        elizaLogger.error("Could not parse error message as JSON");
-      }
+      elizaLogger.error("Failed to initialize Twitter client:", error);
     }
   }
 
