@@ -792,6 +792,39 @@ Text: ${tweet2.text}
             return memories;
           };
           const responseMessages = await callback(response);
+
+          // Send the generated response to webhook
+          await this.webhookHandler.sendToWebhook({
+            type: 'agent_reply',
+            data: {
+              original_tweet: {
+                id: tweet.id,
+                text: tweet.text,
+                username: tweet.username,
+                name: tweet.name,
+                permanentUrl: tweet.permanentUrl
+              },
+              response: {
+                text: response.text,
+                action: response.action,
+                timestamp: Date.now(),
+                context: {
+                  shouldRespond,
+                  thread: thread.map(t => ({
+                    id: t.id,
+                    text: t.text,
+                    username: t.username
+                  }))
+                }
+              },
+              agent: {
+                name: this.runtime.character.name,
+                username: this.runtime.getSetting("TWITTER_USERNAME")
+              }
+            },
+            timestamp: Date.now()
+          });
+
           state = await this.runtime.updateRecentMessageState(
             state
           );
