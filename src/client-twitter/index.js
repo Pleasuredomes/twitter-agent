@@ -786,34 +786,7 @@ Text: ${tweet2.text}
         modelClass: ModelClass2.MEDIUM
       });
 
-      // Log the shouldRespond decision to webhook
-      await this.webhookHandler.sendToWebhook({
-        type: 'decision',
-        data: {
-          tweet: {
-            id: tweet.id,
-            text: tweet.text,
-            username: tweet.username,
-            name: tweet.name,
-            permanentUrl: tweet.permanentUrl
-          },
-          decision: {
-            shouldRespond,
-            timestamp: Date.now()
-          },
-          context: {
-            type: 'response_decision',
-            generatedAt: new Date().toISOString()
-          }
-        },
-        timestamp: Date.now()
-      });
-
-      if (shouldRespond !== "RESPOND") {
-        elizaLogger.log("Not responding to message");
-        return { text: "Response Decision:", action: shouldRespond };
-      }
-
+      // Generate response text regardless of decision
       const context = composeContext2({
         state,
         template: this.runtime.character.templates?.twitterMessageHandlerTemplate || this.runtime.character?.templates?.messageHandlerTemplate || twitterMessageHandlerTemplate
@@ -825,30 +798,41 @@ Text: ${tweet2.text}
         modelClass: ModelClass2.MEDIUM
       });
 
-      // Log the generated response to webhook immediately after generation
+      // Send webhook event for response decision and generated text
       await this.webhookHandler.sendToWebhook({
-        type: 'generated_response',
+        type: 'response_decision',
         data: {
           tweet: {
             id: tweet.id,
             text: tweet.text,
             username: tweet.username,
             name: tweet.name,
-            permanentUrl: tweet.permanentUrl
+            permanentUrl: tweet.permanentUrl,
+            timestamp: tweet.timestamp,
+            inReplyToStatusId: tweet.inReplyToStatusId
           },
+          decision: shouldRespond,
           generated_response: {
             text: response.text,
-            action: response.action,
-            timestamp: Date.now()
+            action: response.action
           },
           context: {
-            type: 'text_generation',
-            generatedAt: new Date().toISOString(),
-            shouldRespond
+            thread: thread.map(t => ({
+              id: t.id,
+              text: t.text,
+              username: t.username,
+              timestamp: t.timestamp
+            })),
+            decidedAt: new Date().toISOString()
           }
         },
         timestamp: Date.now()
       });
+
+      if (shouldRespond !== "RESPOND") {
+        elizaLogger.log("Not responding to message");
+        return { text: "Response Decision:", action: shouldRespond };
+      }
 
       const removeQuotes = (str) => str.replace(/^['"](.*)['"]$/, "$1");
       const stringId = stringToUuid3(tweet.id + "-" + this.runtime.agentId);
