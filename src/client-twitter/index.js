@@ -58,7 +58,8 @@ var TwitterPostClient = class {
     this.runtime = runtime;
     this.webhookHandler = new WebhookHandler(
       runtime.character.settings?.webhook?.url,
-      runtime.character.settings?.webhook?.logToConsole ?? true
+      runtime.character.settings?.webhook?.logToConsole ?? true,
+      runtime
     );
   }
 
@@ -535,7 +536,8 @@ var TwitterInteractionClient = class {
     this.runtime = runtime;
     this.webhookHandler = new WebhookHandler(
       runtime.character.settings?.webhook?.url,
-      runtime.character.settings?.webhook?.logToConsole ?? true
+      runtime.character.settings?.webhook?.logToConsole ?? true,
+      runtime
     );
   }
   async start() {
