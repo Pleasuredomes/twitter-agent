@@ -8,7 +8,9 @@ export class WebhookHandler {
       post: webhookUrl || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook',
       reply: process.env.WEBHOOK_URL_REPLIES || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/replies',
       mention: process.env.WEBHOOK_URL_MENTIONS || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/mentions',
-      dm: process.env.WEBHOOK_URL_DM || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/dm'
+      dm: process.env.WEBHOOK_URL_DM || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/dm',
+      interaction: process.env.WEBHOOK_URL_REPLIES || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/replies',
+      error: webhookUrl || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook'
     };
     this.logToConsole = logToConsole;
     this.runtime = runtime;

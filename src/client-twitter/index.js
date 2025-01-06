@@ -672,7 +672,9 @@ var TwitterInteractionClient = class {
     try {
       // Create base webhook payload that will be sent in all cases
       const webhookPayload = {
-        type: 'interaction',
+        type: tweet.referenced_tweets?.some(ref => ref.type === 'replied_to') ? 'reply' :
+              tweet.text.includes(`@${this.runtime.getSetting("TWITTER_USERNAME")}`) ? 'mention' : 
+              'interaction',
         data: {
           incoming_tweet: {
             id: tweet.id,
