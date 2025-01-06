@@ -670,31 +670,32 @@ var TwitterInteractionClient = class {
     thread
   }) {
     try {
-      // Log and send to webhook for replies
-      if (tweet.referenced_tweets?.some(ref => ref.type === 'replied_to')) {
-        await this.webhookHandler.sendToWebhook({
-          type: 'reply',
-          data: {
-            tweet,
-            message,
-            thread
+      // Create base webhook payload that will be sent in all cases
+      const webhookPayload = {
+        type: 'interaction',
+        data: {
+          incoming_tweet: {
+            id: tweet.id,
+            text: tweet.text,
+            username: tweet.username,
+            name: tweet.name,
+            permanentUrl: tweet.permanentUrl,
+            timestamp: tweet.timestamp,
+            inReplyToStatusId: tweet.inReplyToStatusId
           },
-          timestamp: Date.now()
-        });
-      }
-
-      // Log and send to webhook for mentions
-      if (tweet.text.includes(`@${this.runtime.character.username}`)) {
-        await this.webhookHandler.sendToWebhook({
-          type: 'mention',
-          data: {
-            tweet,
-            message,
-            thread
-          },
-          timestamp: Date.now()
-        });
-      }
+          thread: thread.map(t => ({
+            id: t.id,
+            text: t.text,
+            username: t.username,
+            timestamp: t.timestamp
+          })),
+          agent: {
+            name: this.runtime.character.name,
+            username: this.runtime.getSetting("TWITTER_USERNAME")
+          }
+        },
+        timestamp: Date.now()
+      };
 
       // Process the tweet normally
       const formatTweet = (tweet2) => {
@@ -711,6 +712,7 @@ var TwitterInteractionClient = class {
         homeTimeline = await this.client.fetchHomeTimeline(50);
         await this.client.cacheTimeline(homeTimeline);
       }
+
       elizaLogger.debug("Thread: ", thread);
       const formattedConversation = thread.map(
         (tweet2) => `@${tweet2.username} (${new Date(
@@ -723,16 +725,17 @@ var TwitterInteractionClient = class {
         })}):
           ${tweet2.text}`
       ).join("\n\n");
-      elizaLogger.debug("formattedConversation: ", formattedConversation);
-      const formattedHomeTimeline = `# ${this.runtime.character.name}'s Home Timeline
 
-` + homeTimeline.map((tweet2) => {
-        return `ID: ${tweet2.id}
+      elizaLogger.debug("formattedConversation: ", formattedConversation);
+      const formattedHomeTimeline = `# ${this.runtime.character.name}'s Home Timeline\n\n` + 
+        homeTimeline.map((tweet2) => {
+          return `ID: ${tweet2.id}
 From: ${tweet2.name} (@${tweet2.username})${tweet2.inReplyToStatusId ? ` In reply to: ${tweet2.inReplyToStatusId}` : ""}
 Text: ${tweet2.text}
 ---
 `;
-      }).join("\n");
+        }).join("\n");
+
       let state = await this.runtime.composeState(message, {
         twitterClient: this.client.twitterClient,
         twitterUserName: this.runtime.getSetting("TWITTER_USERNAME"),
@@ -740,6 +743,7 @@ Text: ${tweet2.text}
         formattedConversation,
         timeline: formattedHomeTimeline
       });
+
       const tweetId = stringToUuid3(tweet.id + "-" + this.runtime.agentId);
       const tweetExists = await this.runtime.messageManager.getMemoryById(tweetId);
       if (!tweetExists) {
@@ -762,6 +766,7 @@ Text: ${tweet2.text}
         };
         this.client.saveRequestMessage(message2, state);
       }
+
       const shouldRespondContext = composeContext2({
         state,
         template: this.runtime.character.templates?.twitterShouldRespondTemplate || this.runtime.character?.templates?.shouldRespondTemplate || twitterShouldRespondTemplate
@@ -771,10 +776,19 @@ Text: ${tweet2.text}
         context: shouldRespondContext,
         modelClass: ModelClass2.MEDIUM
       });
+
+      webhookPayload.data.agent_decision = {
+        decision: shouldRespond,
+        timestamp: Date.now()
+      };
+
       if (shouldRespond !== "RESPOND") {
         elizaLogger.log("Not responding to message");
+        // Send webhook with decision not to respond
+        await this.webhookHandler.sendToWebhook(webhookPayload);
         return { text: "Response Decision:", action: shouldRespond };
       }
+
       const context = composeContext2({
         state,
         template: this.runtime.character.templates?.twitterMessageHandlerTemplate || this.runtime.character?.templates?.messageHandlerTemplate || twitterMessageHandlerTemplate
@@ -789,6 +803,7 @@ Text: ${tweet2.text}
       const stringId = stringToUuid3(tweet.id + "-" + this.runtime.agentId);
       response.inReplyTo = stringId;
       response.text = removeQuotes(response.text);
+
       if (response.text) {
         try {
           const callback = async (response2) => {
@@ -800,85 +815,43 @@ Text: ${tweet2.text}
               tweet.id
             );
             
-            // Send webhook notification for each tweet in the thread
-            for (const [index, sentTweet] of result.sentTweets.entries()) {
-              await this.webhookHandler.sendToWebhook({
-                type: 'agent_reply',
-                data: {
-                  tweet: sentTweet,
-                  context: {
-                    isThreaded: result.sentTweets.length > 1,
-                    partNumber: index + 1,
-                    totalParts: result.sentTweets.length,
-                    inReplyTo: tweet.id
-                  }
-                },
-                timestamp: Date.now()
-              });
-            }
+            // Add response tweets to webhook payload
+            webhookPayload.data.agent_response = {
+              tweets: result.sentTweets.map((sentTweet, index) => ({
+                tweet: sentTweet,
+                context: {
+                  isThreaded: result.sentTweets.length > 1,
+                  partNumber: index + 1,
+                  totalParts: result.sentTweets.length,
+                  inReplyTo: tweet.id
+                }
+              })),
+              text: response2.text,
+              action: response2.action,
+              timestamp: Date.now()
+            };
+
+            // Send single webhook with complete interaction data
+            await this.webhookHandler.sendToWebhook(webhookPayload);
             
             return result.memories;
           };
           const responseMessages = await callback(response);
 
-          // Send the generated response to webhook
-          await this.webhookHandler.sendToWebhook({
-            type: 'agent_reply',
-            data: {
-              original_tweet: {
-                id: tweet.id,
-                text: tweet.text,
-                username: tweet.username,
-                name: tweet.name,
-                permanentUrl: tweet.permanentUrl
-              },
-              response: {
-                text: response.text,
-                action: response.action,
-                timestamp: Date.now(),
-                context: {
-                  shouldRespond,
-                  thread: thread.map(t => ({
-                    id: t.id,
-                    text: t.text,
-                    username: t.username
-                  }))
-                }
-              },
-              agent: {
-                name: this.runtime.character.name,
-                username: this.runtime.getSetting("TWITTER_USERNAME")
-              }
-            },
-            timestamp: Date.now()
-          });
-
-          state = await this.runtime.updateRecentMessageState(
-            state
-          );
+          state = await this.runtime.updateRecentMessageState(state);
           for (const responseMessage of responseMessages) {
             if (responseMessage === responseMessages[responseMessages.length - 1]) {
               responseMessage.content.action = response.action;
             } else {
               responseMessage.content.action = "CONTINUE";
             }
-            await this.runtime.messageManager.createMemory(
-              responseMessage
-            );
+            await this.runtime.messageManager.createMemory(responseMessage);
           }
+
           await this.runtime.evaluate(message, state);
-          await this.runtime.processActions(
-            message,
-            responseMessages,
-            state
-          );
-          const responseInfo = `Context:
+          await this.runtime.processActions(message, responseMessages, state);
 
-${context}
-
-Selected Post: ${tweet.id} - ${tweet.username}: ${tweet.text}
-Agent's Output:
-${response.text}`;
+          const responseInfo = `Context:\n\n${context}\n\nSelected Post: ${tweet.id} - ${tweet.username}: ${tweet.text}\nAgent's Output:\n${response.text}`;
           await this.runtime.cacheManager.set(
             `twitter/tweet_generation_${tweet.id}.txt`,
             responseInfo
@@ -886,10 +859,35 @@ ${response.text}`;
           await wait();
         } catch (error) {
           elizaLogger.error(`Error sending response tweet: ${error}`);
+          // Send webhook with error information
+          webhookPayload.data.error = {
+            message: error.message,
+            stack: error.stack,
+            timestamp: Date.now()
+          };
+          await this.webhookHandler.sendToWebhook(webhookPayload);
         }
       }
     } catch (error) {
       elizaLogger.error('Error handling tweet:', error);
+      // Send webhook with error information
+      const errorPayload = {
+        type: 'error',
+        data: {
+          error: error.message,
+          stack: error.stack,
+          context: 'handleTweet',
+          original_tweet: {
+            id: tweet.id,
+            text: tweet.text,
+            username: tweet.username,
+            name: tweet.name,
+            permanentUrl: tweet.permanentUrl
+          }
+        },
+        timestamp: Date.now()
+      };
+      await this.webhookHandler.sendToWebhook(errorPayload);
     }
   }
   async handleDirectMessage(message) {
