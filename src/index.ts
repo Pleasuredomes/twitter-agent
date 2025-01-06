@@ -1,13 +1,8 @@
-import express from 'express';
 import { elizaLogger } from "@ai16z/eliza";
 import { z } from "zod";
 import { validateTwitterConfig } from './environment';
 import { TwitterManager } from './base';
 
-const app = express();
-app.use(express.json());
-
-const PORT = process.env.PORT || 3000;
 let twitterManager: TwitterManager | null = null;
 
 // Validation schema for approval payload
@@ -21,34 +16,6 @@ const ApprovalPayloadSchema = z.object({
   })
 });
 
-// Endpoint to handle Airtable approval responses
-app.post('/api/twitter/approval', async (req, res) => {
-  try {
-    if (!twitterManager) {
-      throw new Error('Twitter manager not initialized');
-    }
-
-    // Validate the payload
-    const validationResult = ApprovalPayloadSchema.safeParse(req.body);
-    if (!validationResult.success) {
-      elizaLogger.error('Invalid approval payload:', validationResult.error);
-      return res.status(400).json({
-        error: 'Invalid payload',
-        details: validationResult.error.errors
-      });
-    }
-
-    const result = await twitterManager.handleAirtableApproval(validationResult.data);
-    return res.json(result);
-  } catch (error) {
-    elizaLogger.error('Error handling approval endpoint:', error);
-    return res.status(500).json({
-      error: 'Internal server error',
-      message: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-});
-
 export const TwitterClientInterface = {
   async start(runtime) {
     await validateTwitterConfig(runtime);
@@ -58,15 +25,54 @@ export const TwitterClientInterface = {
     await twitterManager.post.start();
     await twitterManager.interaction.start();
 
-    // Start the Express server
-    app.listen(PORT, () => {
-      elizaLogger.log(`API server listening on port ${PORT}`);
+    // Keep the worker running
+    process.on('SIGTERM', () => {
+      elizaLogger.log('Received SIGTERM signal, preparing for shutdown...');
+      // Add any cleanup logic here
+      process.exit(0);
     });
+
+    // Log that we're running
+    elizaLogger.log("Twitter background worker is running...");
 
     return twitterManager;
   },
+
   async stop(runtime) {
     elizaLogger.warn("Twitter client does not support stopping yet");
+  },
+
+  // This can be called directly from your Make (Integromat) webhook
+  async handleApproval(payload: unknown) {
+    try {
+      if (!twitterManager) {
+        throw new Error('Twitter manager not initialized');
+      }
+
+      // Validate the payload
+      const validationResult = ApprovalPayloadSchema.safeParse(payload);
+      if (!validationResult.success) {
+        elizaLogger.error('Invalid approval payload:', validationResult.error);
+        return {
+          success: false,
+          error: 'Invalid payload',
+          details: validationResult.error.errors
+        };
+      }
+
+      const result = await twitterManager.handleAirtableApproval(validationResult.data);
+      return {
+        success: true,
+        ...result
+      };
+    } catch (error) {
+      elizaLogger.error('Error handling approval:', error);
+      return {
+        success: false,
+        error: 'Internal error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
   }
 };
 
