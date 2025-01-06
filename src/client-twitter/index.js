@@ -356,20 +356,28 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
       permanentUrl: `https://twitter.com/${twitterUsername}/status/${Date.now()}`
     };
 
-    // Send to webhook
-    await client.webhookHandler.sendToWebhook({
-      type: 'agent_reply',
-      data: {
-        tweet: tweetData,
-        context: {
-          isThreaded: tweetChunks.length > 1,
-          partNumber: sentTweets.length + 1,
-          totalParts: tweetChunks.length,
-          inReplyTo: previousTweetId
-        }
-      },
-      timestamp: Date.now()
-    });
+    try {
+      // Send to webhook if available
+      if (client.webhookHandler) {
+        await client.webhookHandler.sendToWebhook({
+          type: 'agent_reply',
+          data: {
+            tweet: tweetData,
+            context: {
+              isThreaded: tweetChunks.length > 1,
+              partNumber: sentTweets.length + 1,
+              totalParts: tweetChunks.length,
+              inReplyTo: previousTweetId
+            }
+          },
+          timestamp: Date.now()
+        });
+      } else {
+        elizaLogger.warn("No webhookHandler available for sending tweet");
+      }
+    } catch (error) {
+      elizaLogger.error("Error sending webhook notification:", error);
+    }
 
     const finalTweet = {
       id: tweetData.id,
@@ -1005,7 +1013,7 @@ ${response.text}`;
         tweetId: currentTweet.id
       });
       if (currentTweet.inReplyToStatusId) {
-        elizaLogger.log(
+        elizaLogger.debug(
           "Fetching parent tweet:",
           currentTweet.inReplyToStatusId
         );
@@ -1014,13 +1022,13 @@ ${response.text}`;
             currentTweet.inReplyToStatusId
           );
           if (parentTweet) {
-            elizaLogger.log("Found parent tweet:", {
+            elizaLogger.debug("Found parent tweet:", {
               id: parentTweet.id,
               text: parentTweet.text?.slice(0, 50)
             });
             await processThread(parentTweet, depth + 1);
           } else {
-            elizaLogger.log(
+            elizaLogger.debug(
               "No parent tweet found for:",
               currentTweet.inReplyToStatusId
             );
@@ -1148,36 +1156,8 @@ var ClientBase = class _ClientBase extends EventEmitter {
   temperature = 0.5;
   requestQueue = new RequestQueue();
   profile;
-  async cacheTweet(tweet) {
-    if (!tweet) {
-      console.warn("Tweet is undefined, skipping cache");
-      return;
-    }
-    this.runtime.cacheManager.set(`twitter/tweets/${tweet.id}`, tweet);
-  }
-  async getCachedTweet(tweetId) {
-    const cached = await this.runtime.cacheManager.get(
-      `twitter/tweets/${tweetId}`
-    );
-    return cached;
-  }
-  async getTweet(tweetId) {
-    const cachedTweet = await this.getCachedTweet(tweetId);
-    if (cachedTweet) {
-      return cachedTweet;
-    }
-    const tweet = await this.requestQueue.add(
-      () => this.twitterClient.getTweet(tweetId)
-    );
-    await this.cacheTweet(tweet);
-    return tweet;
-  }
-  callback = null;
-  onReady() {
-    throw new Error(
-      "Not implemented in base class, please call from subclass"
-    );
-  }
+  webhookHandler;
+
   constructor(runtime) {
     super();
     this.runtime = runtime;
@@ -1188,6 +1168,13 @@ var ClientBase = class _ClientBase extends EventEmitter {
       _ClientBase._twitterClient = this.twitterClient;
     }
     this.directions = "- " + this.runtime.character.style.all.join("\n- ") + "- " + this.runtime.character.style.post.join();
+    
+    // Initialize webhookHandler
+    this.webhookHandler = new WebhookHandler(
+      runtime.character.settings?.webhook?.url,
+      runtime.character.settings?.webhook?.logToConsole ?? true,
+      runtime
+    );
   }
   async init() {
     const username = this.runtime.getSetting("TWITTER_USERNAME");
