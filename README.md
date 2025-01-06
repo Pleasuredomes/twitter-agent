@@ -1,5 +1,70 @@
 # Eliza
 
+## Quick Setup Guide
+
+1. **Create Make (Integromat) Webhook**:
+   - Go to Make.com (formerly Integromat)
+   - Create new scenario
+   - Add "Webhooks" module > "Custom webhook"
+   - Copy the webhook URL (looks like `https://hook.eu1.make.com/abc123...`)
+   - This URL will be your `WEBHOOK_URL_APPROVAL`
+
+2. **Set Up Airtable**:
+   - Create new base
+   - Create "Tweet Approvals" table with these required fields:
+     ```
+     approval_id (Single line text)
+     status (Single select: pending/approved/rejected)
+     content (Long text)
+     ```
+
+3. **Connect Airtable to Make**:
+   - In your Make scenario:
+   - Add "Airtable > Watch Records"
+   - Connect to your Airtable base
+   - Select "Tweet Approvals" table
+   - Set filter: When status changes from "pending"
+   - Add "Webhook" action after Airtable
+   - Set webhook URL to point to your agent
+   - Set payload:
+     ```json
+     {
+       "type": "approval_response",
+       "data": {
+         "approval_id": "{{1.approval_id}}",
+         "approved": "{{1.status}} = 'approved'",
+         "modified_content": "{{1.modified_content}}",
+         "reason": "{{1.reason}}"
+       }
+     }
+     ```
+
+4. **Configure Your Agent**:
+   ```bash
+   # 1. Set up .env
+   cp .env.example .env
+   
+   # 2. Add to .env:
+   WEBHOOK_URL_APPROVAL="your_make_webhook_url"  # The URL from step 1
+   TWITTER_USERNAME="your_username"
+   TWITTER_PASSWORD="your_password"
+   TWITTER_EMAIL="your_email"
+   
+   # 3. Create character file (characters/your-character.json):
+   {
+     "name": "Your Character",
+     "clients": ["twitter"]
+   }
+   
+   # 4. Run the agent:
+   pnpm auto --character=characters/your-character.json
+   ```
+
+The webhook flow will be:
+```
+Agent → Airtable (pending) → Make watches for changes → Make sends approval to Agent → Agent posts to Twitter
+```
+
 ## Edit the character files
 
 Open `agent/src/character.ts` to modify the default character. Uncomment and edit.
