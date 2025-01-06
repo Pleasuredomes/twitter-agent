@@ -338,9 +338,9 @@ async function buildConversationThread(tweet, client, maxReplies = 10) {
   });
   return thread;
 }
-async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
+async function sendTweet(client, content, roomId, twitterUsername, inReplyTo, webhookHandler) {
   const tweetChunks = splitTweetContent(content.text);
-  const sentTweets = [];
+  const pendingTweets = [];
   let previousTweetId = inReplyTo;
 
   for (const chunk of tweetChunks) {
@@ -356,31 +356,30 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
       permanentUrl: `https://twitter.com/${twitterUsername}/status/${Date.now()}`
     };
 
-    // Note: Webhook notification is now handled by the calling class (TwitterPostClient/TwitterInteractionClient)
-    // which has the properly initialized webhookHandler
+    // Queue for approval instead of waiting
+    const queueResult = await webhookHandler.queueForApproval(
+      tweetData,
+      inReplyTo ? 'reply' : 'post',
+      {
+        isThreaded: tweetChunks.length > 1,
+        partNumber: pendingTweets.length + 1,
+        totalParts: tweetChunks.length,
+        inReplyTo: previousTweetId
+      }
+    );
 
-    const finalTweet = {
-      id: tweetData.id,
-      text: tweetData.text,
-      conversationId: tweetData.conversationId,
-      timestamp: tweetData.timestamp,
-      userId: client.profile.id,
-      inReplyToStatusId: tweetData.inReplyToStatusId,
-      permanentUrl: tweetData.permanentUrl,
-      hashtags: [],
-      mentions: [],
-      photos: [],
-      thread: [],
-      urls: [],
-      videos: []
+    const pendingTweet = {
+      ...tweetData,
+      approvalId: queueResult.approvalId,
+      status: 'pending'
     };
 
-    sentTweets.push(finalTweet);
-    previousTweetId = finalTweet.id;
+    pendingTweets.push(pendingTweet);
+    previousTweetId = pendingTweet.id;
     await wait(1000, 2000);
   }
 
-  const memories = sentTweets.map((tweet) => ({
+  const memories = pendingTweets.map((tweet) => ({
     id: stringToUuid2(tweet.id + "-" + client.runtime.agentId),
     agentId: client.runtime.agentId,
     userId: client.runtime.agentId,
@@ -390,14 +389,16 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
       url: tweet.permanentUrl,
       inReplyTo: tweet.inReplyToStatusId ? stringToUuid2(
         tweet.inReplyToStatusId + "-" + client.runtime.agentId
-      ) : void 0
+      ) : void 0,
+      approvalId: tweet.approvalId,
+      status: 'pending_approval'
     },
     roomId,
     embedding: embeddingZeroVector2,
     createdAt: tweet.timestamp
   }));
 
-  return { memories, sentTweets };
+  return { memories, pendingTweets };
 }
 function splitTweetContent(content) {
   const maxLength = MAX_TWEET_LENGTH2;
@@ -814,7 +815,8 @@ Text: ${tweet2.text}
               response2,
               message.roomId,
               this.runtime.getSetting("TWITTER_USERNAME"),
-              tweet.id
+              tweet.id,
+              this.webhookHandler
             );
             
             // Add response tweets to webhook payload
@@ -825,7 +827,8 @@ Text: ${tweet2.text}
                   isThreaded: result.sentTweets.length > 1,
                   partNumber: index + 1,
                   totalParts: result.sentTweets.length,
-                  inReplyTo: tweet.id
+                  inReplyTo: tweet.id,
+                  approvalId: sentTweet.approvalId
                 }
               })),
               text: response2.text,
@@ -1012,6 +1015,90 @@ Text: ${tweet2.text}
       }))
     });
     return thread;
+  }
+  // Add method to handle approval responses
+  async handleApprovalResponse(approvalId, approved, modifiedContent = null, reason = '') {
+    try {
+      // Get the approval result from webhook handler
+      const result = await this.webhookHandler.handleApprovalResponse(approvalId, approved, modifiedContent, reason);
+      if (!result) {
+        elizaLogger.error('No pending approval found for:', approvalId);
+        return;
+      }
+
+      // Get the memory associated with this approval
+      const memories = await this.runtime.messageManager.getMemoriesByQuery({
+        agentId: this.runtime.agentId,
+        query: {
+          'content.approvalId': approvalId
+        }
+      });
+
+      if (!memories || memories.length === 0) {
+        elizaLogger.error('No memory found for approval:', approvalId);
+        return;
+      }
+
+      const memory = memories[0];
+
+      if (approved) {
+        // Send the approved tweet to Twitter
+        const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || memory.content.text;
+        
+        try {
+          const result = await this.client.twitterClient.sendTweet(
+            tweetContent,
+            memory.content.inReplyTo
+          );
+
+          // Update memory with sent status and Twitter response
+          await this.runtime.messageManager.updateMemory({
+            ...memory,
+            content: {
+              ...memory.content,
+              status: 'sent',
+              twitterResponse: result,
+              modifiedText: tweetContent !== memory.content.text ? tweetContent : undefined
+            }
+          });
+
+          elizaLogger.log('Successfully sent approved tweet:', {
+            approvalId,
+            tweetId: result.id,
+            text: tweetContent
+          });
+        } catch (error) {
+          elizaLogger.error('Error sending approved tweet to Twitter:', error);
+          
+          // Update memory with error status
+          await this.runtime.messageManager.updateMemory({
+            ...memory,
+            content: {
+              ...memory.content,
+              status: 'error',
+              error: error.message
+            }
+          });
+        }
+      } else {
+        // Update memory with rejected status
+        await this.runtime.messageManager.updateMemory({
+          ...memory,
+          content: {
+            ...memory.content,
+            status: 'rejected',
+            reason
+          }
+        });
+
+        elizaLogger.log('Tweet rejected:', {
+          approvalId,
+          reason
+        });
+      }
+    } catch (error) {
+      elizaLogger.error('Error handling approval response:', error);
+    }
   }
 };
 
@@ -1523,10 +1610,40 @@ var TwitterManager = class {
   post;
   search;
   interaction;
+
   constructor(runtime) {
     this.client = new ClientBase(runtime);
     this.post = new TwitterPostClient(this.client, runtime);
     this.interaction = new TwitterInteractionClient(this.client, runtime);
+  }
+
+  // Add method to handle incoming approval responses from Airtable
+  async handleAirtableApproval(payload) {
+    try {
+      if (payload.type !== 'approval_response' || !payload.data?.approval_id) {
+        elizaLogger.error('Invalid approval payload:', payload);
+        return;
+      }
+
+      const { approval_id, approved, modified_content, reason } = payload.data;
+      
+      // Forward the approval to the interaction client
+      await this.interaction.handleApprovalResponse(
+        approval_id,
+        approved === true || approved === 'true',
+        modified_content,
+        reason
+      );
+
+      return {
+        success: true,
+        message: `Successfully processed ${approved ? 'approval' : 'rejection'} for ID: ${approval_id}`
+      };
+
+    } catch (error) {
+      elizaLogger.error('Error handling Airtable approval:', error);
+      throw error;
+    }
   }
 };
 var TwitterClientInterface = {
