@@ -30,7 +30,6 @@ import yargs from "yargs";
 import TwitterManager from "./client-twitter";
 import { TwitterClientInterface } from "./client-twitter";
 import Client from "./client-twitter";
-import { WebhookHandler } from "./client-twitter/webhook.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,37 +39,21 @@ interface ExtendedSettings {
   voice?: { model?: string; url?: string };
   model?: string;
   embeddingModel?: string;
-  webhook?: {
-    enabled?: boolean;
-    url?: string;
+  webhook: {
+    enabled: boolean;
+    url: string;
     logToConsole?: boolean;
   };
   post?: {
-    enabled?: boolean;
-    intervalMin?: number;
-    intervalMax?: number;
+    enabled: boolean;
+    intervalMin: number;
+    intervalMax: number;
     prompt?: string;
   };
 }
 
 interface ExtendedCharacter extends Character {
-  settings: {
-    secrets?: { [key: string]: string };
-    voice?: { model?: string; url?: string };
-    model?: string;
-    embeddingModel?: string;
-    webhook?: {
-      enabled?: boolean;
-      url?: string;
-      logToConsole?: boolean;
-    };
-    post?: {
-      enabled?: boolean;
-      intervalMin?: number;
-      intervalMax?: number;
-      prompt?: string;
-    };
-  };
+  settings: ExtendedSettings;
 }
 
 interface ExtendedRuntime extends AgentRuntime {
@@ -106,51 +89,54 @@ class MonitorOnlyTwitterManager {
   private initializationRetries: number = 0;
   private readonly MAX_RETRIES: number = 5;
   private runtime: IAgentRuntime;
-  private processedInteractions: Set<string> = new Set();
+  private processedInteractions: Set<string> = new Set(); // Track processed interactions
 
   constructor(runtime: IAgentRuntime) {
+    elizaLogger.info("🚀 Initializing Twitter monitoring manager...");
     this.runtime = runtime;
-    this.client = {
-      profile: {
-        id: 'monitor-only',
-        username: runtime.getSetting("TWITTER_USERNAME") || 'monitor',
-        screenName: runtime.character.name || 'Monitor'
-      }
-    };
-  }
-
-  async start() {
-    try {
-      await this.initializeTwitterClient(this.runtime);
-      this.isInitialized = true;
-      elizaLogger.log("Monitor-only Twitter client started successfully");
-    } catch (error) {
-      elizaLogger.error("Failed to initialize monitor-only Twitter client:", error);
-    }
+    this.initializeTwitterClient(runtime);
   }
 
   private async initializeTwitterClient(runtime: IAgentRuntime) {
     try {
-      if (!this.client.profile) {
-        throw new Error("Twitter client profile is required for monitoring");
-      }
+      elizaLogger.info("🔄 Attempting to initialize Twitter client...");
       
-      // Initialize webhook handler
-      this.client.webhookHandler = new WebhookHandler(
-        runtime.character.settings?.webhook?.url,
-        runtime.character.settings?.webhook?.logToConsole ?? true,
-        runtime
-      );
-
-      elizaLogger.log("Monitor-only Twitter client initialized with profile:", this.client.profile);
+      // Log credentials being used (safely)
+      elizaLogger.info("🔑 Using Twitter credentials:", {
+        username: process.env.TWITTER_USERNAME ? "✓ Set" : "✗ Missing",
+        email: process.env.TWITTER_EMAIL ? "✓ Set" : "✗ Missing",
+        password: process.env.TWITTER_PASSWORD ? "✓ Set" : "✗ Missing"
+      });
+      
+      this.client = await TwitterClientInterface.start(runtime);
+      
+      if (this.client?.profile) {
+        elizaLogger.success("✅ Twitter client initialized successfully with profile:", {
+          username: this.client.profile.username,
+          id: this.client.profile.id
+        });
+        this.isInitialized = true;
+        this.startMonitoring();
+      } else {
+        throw new Error("Twitter client initialized but profile is missing");
+      }
     } catch (error) {
+      elizaLogger.error("❌ Failed to initialize Twitter client:", {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined,
+        details: error
+      });
+      
       if (this.initializationRetries < this.MAX_RETRIES) {
         this.initializationRetries++;
-        elizaLogger.warn(`Retrying Twitter client initialization (attempt ${this.initializationRetries}/${this.MAX_RETRIES})`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        await this.initializeTwitterClient(runtime);
+        const delay = Math.min(1000 * Math.pow(2, this.initializationRetries), 30000);
+        elizaLogger.info(`🔄 Retrying initialization in ${delay/1000} seconds... (Attempt ${this.initializationRetries}/${this.MAX_RETRIES})`);
+        
+        setTimeout(() => {
+          this.initializeTwitterClient(runtime);
+        }, delay);
       } else {
-        throw new Error("Failed to initialize Twitter client after max retries");
+        elizaLogger.error("⛔ Max retries reached. Failed to initialize Twitter client.");
       }
     }
   }
