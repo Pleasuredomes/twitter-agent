@@ -356,20 +356,8 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
       permanentUrl: `https://twitter.com/${twitterUsername}/status/${Date.now()}`
     };
 
-    // Send to webhook
-    await client.webhookHandler.sendToWebhook({
-      type: 'agent_reply',
-      data: {
-        tweet: tweetData,
-        context: {
-          isThreaded: tweetChunks.length > 1,
-          partNumber: sentTweets.length + 1,
-          totalParts: tweetChunks.length,
-          inReplyTo: previousTweetId
-        }
-      },
-      timestamp: Date.now()
-    });
+    // Note: Webhook notification is now handled by the calling class (TwitterPostClient/TwitterInteractionClient)
+    // which has the properly initialized webhookHandler
 
     const finalTweet = {
       id: tweetData.id,
@@ -409,7 +397,7 @@ async function sendTweet(client, content, roomId, twitterUsername, inReplyTo) {
     createdAt: tweet.timestamp
   }));
 
-  return memories;
+  return { memories, sentTweets };
 }
 function splitTweetContent(content) {
   const maxLength = MAX_TWEET_LENGTH2;
@@ -804,14 +792,32 @@ Text: ${tweet2.text}
       if (response.text) {
         try {
           const callback = async (response2) => {
-            const memories = await sendTweet(
+            const result = await sendTweet(
               this.client,
               response2,
               message.roomId,
               this.runtime.getSetting("TWITTER_USERNAME"),
               tweet.id
             );
-            return memories;
+            
+            // Send webhook notification for each tweet in the thread
+            for (const [index, sentTweet] of result.sentTweets.entries()) {
+              await this.webhookHandler.sendToWebhook({
+                type: 'agent_reply',
+                data: {
+                  tweet: sentTweet,
+                  context: {
+                    isThreaded: result.sentTweets.length > 1,
+                    partNumber: index + 1,
+                    totalParts: result.sentTweets.length,
+                    inReplyTo: tweet.id
+                  }
+                },
+                timestamp: Date.now()
+              });
+            }
+            
+            return result.memories;
           };
           const responseMessages = await callback(response);
 
