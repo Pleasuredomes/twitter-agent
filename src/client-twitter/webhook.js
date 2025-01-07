@@ -14,8 +14,14 @@ export class WebhookHandler {
       error: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
       
       // Approval System URLs
-      approval: process.env.MAKE_WEBHOOK_URL_APPROVAL_REQUEST,
-      approval_checks: process.env.MAKE_WEBHOOK_URL_APPROVAL_CHECKS
+      approval: process.env.MAKE_WEBHOOK_URL_APPROVAL_REQUEST
+    };
+
+    // Airtable configuration
+    this.airtableConfig = {
+      baseId: process.env.AIRTABLE_BASE_ID,
+      tableId: process.env.AIRTABLE_TABLE_ID,
+      apiKey: process.env.AIRTABLE_API_KEY
     };
 
     // Validate webhook URLs
@@ -25,132 +31,64 @@ export class WebhookHandler {
       }
     });
 
+    // Validate Airtable config
+    if (!this.airtableConfig.baseId || !this.airtableConfig.tableId || !this.airtableConfig.apiKey) {
+      elizaLogger.error('Missing Airtable configuration');
+    }
+
     this.logToConsole = logToConsole;
     this.runtime = runtime;
     this.pendingApprovals = new Map();
-    
-    // Start polling for approvals
-    this.startPollingApprovals();
   }
 
-  // Poll Airtable for approvals via Make webhook
-  async startPollingApprovals() {
-    const checkApprovals = async () => {
-      try {
-        elizaLogger.log('Checking for approvals...');
-        
-        // Clean and prepare the payload
-        const payload = {
-          type: 'check_approvals',
-          data: {
-            agent: {
-              name: this.runtime.character.name,
-              username: this.runtime.getSetting("TWITTER_USERNAME")
-            }
-          },
-          timestamp: Date.now()
-        };
-
-        // Send request to Make to check for approvals
-        const response = await fetch(this.webhookUrls.approval_checks, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (response.ok) {
-          const responseText = await response.text();
-          let approvals;
-          
-          try {
-            // Handle the response which might be wrapped in responseText
-            let jsonStr = responseText;
-            
-            // If it's wrapped in a responseText field, extract it
-            try {
-              const wrapper = JSON.parse(responseText);
-              if (wrapper.responseText) {
-                jsonStr = wrapper.responseText;
-              }
-            } catch (e) {
-              // If parsing as wrapper fails, use the original response
-            }
-
-            // Now parse the actual approvals data
-            try {
-              approvals = JSON.parse(jsonStr);
-            } catch (e) {
-              // If that fails, try evaluating it as a JavaScript string
-              // This handles cases where the string has escaped quotes
-              approvals = eval('(' + jsonStr + ')');
-            }
-
-            elizaLogger.log('Successfully parsed approvals:', approvals);
-          } catch (parseError) {
-            elizaLogger.error('Failed to parse approvals response:', {
-              responseText,
-              error: parseError.message
-            });
-            return;
-          }
-
-          if (approvals && Array.isArray(approvals)) {
-            // Process each approval
-            for (const approval of approvals) {
-              const { approval_id, approved, modified_content, reason } = approval;
-              
-              // Ensure we have valid data
-              if (!approval_id) {
-                elizaLogger.error('Received approval without approval_id:', approval);
-                continue;
-              }
-
-              // Clean the content and reason
-              const cleanContent = modified_content ? 
-                String(modified_content).replace(/[\n\r]+/g, ' ').trim() : 
-                null;
-              const cleanReason = reason ? 
-                String(reason).replace(/[\n\r]+/g, ' ').trim() : 
-                '';
-
-              elizaLogger.log('Processing approval:', {
-                approval_id,
-                approved,
-                has_modified_content: !!cleanContent,
-                reason: cleanReason
-              });
-
-              await this.handleApprovalResponse(
-                approval_id,
-                approved,
-                cleanContent,
-                cleanReason
-              );
-            }
-          } else {
-            elizaLogger.log('No new approvals to process');
-          }
-        } else {
-          const errorText = await response.text();
-          elizaLogger.error('Error response from approval check:', {
-            status: response.status,
-            error: errorText
-          });
+  // Check approval status directly in Airtable
+  async checkApprovalStatus(approvalId) {
+    try {
+      elizaLogger.log('Checking approval status in Airtable for:', approvalId);
+      
+      const url = `https://api.airtable.com/v0/${this.airtableConfig.baseId}/${this.airtableConfig.tableId}`;
+      const response = await fetch(`${url}?filterByFormula=approval_id="${approvalId}"`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.airtableConfig.apiKey}`,
+          'Content-Type': 'application/json'
         }
-      } catch (error) {
-        elizaLogger.error('Error checking approvals:', error);
-      } finally {
-        // Always schedule the next check, even if there was an error
-        setTimeout(checkApprovals, 30000);
-        elizaLogger.log('Next approval check scheduled in 30 seconds');
-      }
-    };
+      });
 
-    // Start the polling loop immediately
-    elizaLogger.log('Starting approval polling...');
-    checkApprovals();
+      if (!response.ok) {
+        throw new Error(`Failed to check status with ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      if (!data.records || data.records.length === 0) {
+        elizaLogger.error('No record found for approval ID:', approvalId);
+        return { status: 'pending' };
+      }
+
+      const record = data.records[0].fields;
+      const status = record.Status?.toLowerCase() || 'pending';
+      
+      if (status !== 'pending') {
+        // Process the approval/rejection
+        await this.handleApprovalResponse(
+          approvalId,
+          status === 'approved',
+          record.modified_content,
+          record.reason
+        );
+      }
+
+      return {
+        status,
+        modified_content: record.modified_content,
+        reason: record.reason
+      };
+
+    } catch (error) {
+      elizaLogger.error('Error checking approval status:', error);
+      throw error;
+    }
   }
 
   // Queue tweet for approval
@@ -221,6 +159,18 @@ export class WebhookHandler {
           timestamp: Date.now()
         }
       );
+
+      // Start checking status periodically (every 5 minutes)
+      const checkStatus = async () => {
+        const status = await this.checkApprovalStatus(approvalId);
+        if (status.status === 'pending') {
+          // Check again in 5 minutes
+          setTimeout(checkStatus, 5 * 60 * 1000);
+        }
+      };
+
+      // Start first check in 5 minutes
+      setTimeout(checkStatus, 5 * 60 * 1000);
 
       return {
         approvalId,
