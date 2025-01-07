@@ -105,8 +105,15 @@ export class WebhookHandler {
       
       // Ensure content is properly formatted
       const formattedContent = typeof content === 'object' ? 
-        (content.text || JSON.stringify(content)) : 
-        content;
+        (content.text || content.toString()) : 
+        (content || '');
+
+      // Log the content being queued
+      elizaLogger.log('Formatting content for approval:', {
+        originalContent: content,
+        formattedContent,
+        type
+      });
 
       const approvalPayload = {
         type: 'approval_request',
@@ -126,7 +133,8 @@ export class WebhookHandler {
       elizaLogger.log('Queuing content for approval:', {
         approvalId,
         type,
-        content: formattedContent
+        content: formattedContent,
+        context: context
       });
 
       // Store in pending queue
@@ -219,6 +227,29 @@ export class WebhookHandler {
         originalContent: pending?.payload?.data?.content
       });
 
+      // If approved, post to Twitter
+      if (approved && pending?.payload?.data) {
+        const { content_type, content } = pending.payload.data;
+        const finalContent = modifiedContent || content;
+
+        elizaLogger.log('Posting approved content to Twitter:', {
+          type: content_type,
+          content: finalContent
+        });
+
+        try {
+          // Emit the approved event for the runtime to handle
+          await this.runtime.emit('content_approved', {
+            type: content_type,
+            content: finalContent,
+            context: pending.payload.data.context,
+            approvalId
+          });
+        } catch (error) {
+          elizaLogger.error('Error posting approved content to Twitter:', error);
+        }
+      }
+
       return result;
     } catch (error) {
       elizaLogger.error('Error handling approval response:', error);
@@ -267,20 +298,16 @@ export class WebhookHandler {
       // Also send to approval webhook if it's a content type that needs approval
       if (['post', 'reply', 'mention', 'dm'].includes(event.type)) {
         // Format content and context based on event type
-        let formattedContent = event.data.content;
+        let formattedContent = '';
         let formattedContext = {};
 
         switch (event.type) {
           case 'post':
-            formattedContent = typeof event.data.content === 'object' ? 
-              event.data.content.text || JSON.stringify(event.data.content) : 
-              event.data.content;
+            formattedContent = event.data.text || event.data.content || '';
             break;
           
           case 'reply':
-            formattedContent = typeof event.data.content === 'object' ? 
-              event.data.content.text || JSON.stringify(event.data.content) : 
-              event.data.content;
+            formattedContent = event.data.text || event.data.content || '';
             formattedContext = {
               in_reply_to: event.data.in_reply_to,
               conversation_id: event.data.conversation_id
@@ -288,9 +315,7 @@ export class WebhookHandler {
             break;
           
           case 'mention':
-            formattedContent = typeof event.data.content === 'object' ? 
-              event.data.content.text || JSON.stringify(event.data.content) : 
-              event.data.content;
+            formattedContent = event.data.text || event.data.content || '';
             formattedContext = {
               tweet_id: event.data.tweet_id,
               user: event.data.user
@@ -298,15 +323,20 @@ export class WebhookHandler {
             break;
           
           case 'dm':
-            formattedContent = typeof event.data.content === 'object' ? 
-              event.data.content.text || JSON.stringify(event.data.content) : 
-              event.data.content;
+            formattedContent = event.data.text || event.data.content || '';
             formattedContext = {
               conversation_id: event.data.conversation_id,
               recipient: event.data.recipient
             };
             break;
         }
+
+        // Log the content being sent for approval
+        elizaLogger.log('Sending content for approval:', {
+          type: event.type,
+          content: formattedContent,
+          context: formattedContext
+        });
 
         await this.queueForApproval(
           formattedContent,
