@@ -3,23 +3,68 @@ import fetch from "node-fetch";
 
 export class WebhookHandler {
   constructor(webhookUrl, logToConsole = true, runtime) {
-    // Set up different webhook URLs for each event type
+    // Set up webhook URL for sending to Make
     this.webhookUrls = {
-      post: webhookUrl || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook',
-      reply: process.env.WEBHOOK_URL_REPLIES || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/replies',
-      mention: process.env.WEBHOOK_URL_MENTIONS || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/mentions',
-      dm: process.env.WEBHOOK_URL_DM || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/dm',
-      interaction: process.env.WEBHOOK_URL_REPLIES || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/replies',
-      error: webhookUrl || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook',
-      approval: process.env.WEBHOOK_URL_APPROVAL || process.env.WEBHOOK_URL || 'http://localhost:3000/webhook/approval'
+      post: webhookUrl || process.env.MAKE_WEBHOOK_URL,
+      reply: webhookUrl || process.env.MAKE_WEBHOOK_URL,
+      mention: webhookUrl || process.env.MAKE_WEBHOOK_URL,
+      dm: webhookUrl || process.env.MAKE_WEBHOOK_URL,
+      interaction: webhookUrl || process.env.MAKE_WEBHOOK_URL,
+      error: webhookUrl || process.env.MAKE_WEBHOOK_URL,
+      approval: webhookUrl || process.env.MAKE_WEBHOOK_URL
     };
     this.logToConsole = logToConsole;
     this.runtime = runtime;
     this.pendingApprovals = new Map();
-    this.approvalCallbacks = new Map();
+    
+    // Start polling for approvals
+    this.startPollingApprovals();
   }
 
-  // Add a new tweet to pending queue and return a promise that will resolve when approved
+  // Poll Airtable for approvals via Make webhook
+  async startPollingApprovals() {
+    const checkApprovals = async () => {
+      try {
+        // Send request to Make to check for approvals
+        const response = await fetch(this.webhookUrls.approval, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            type: 'check_approvals',
+            data: {
+              agent: {
+                name: this.runtime.character.name,
+                username: this.runtime.getSetting("TWITTER_USERNAME")
+              }
+            },
+            timestamp: Date.now()
+          })
+        });
+
+        if (response.ok) {
+          const approvals = await response.json();
+          
+          // Process each approval
+          for (const approval of approvals) {
+            const { approval_id, approved, modified_content, reason } = approval;
+            await this.handleApprovalResponse(approval_id, approved, modified_content, reason);
+          }
+        }
+      } catch (error) {
+        elizaLogger.error('Error checking approvals:', error);
+      }
+
+      // Check again in 30 seconds
+      setTimeout(checkApprovals, 30000);
+    };
+
+    // Start the polling loop
+    checkApprovals();
+  }
+
+  // Queue tweet for approval
   async queueForApproval(content, type, context = {}) {
     try {
       const approvalId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -51,7 +96,7 @@ export class WebhookHandler {
         timestamp: Date.now()
       });
 
-      // Send to webhook
+      // Send to Make webhook
       const response = await fetch(this.webhookUrls.approval, {
         method: 'POST',
         headers: {
@@ -74,7 +119,6 @@ export class WebhookHandler {
         }
       );
 
-      // Return the approval ID for tracking
       return {
         approvalId,
         status: 'pending'
