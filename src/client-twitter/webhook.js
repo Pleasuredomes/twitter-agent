@@ -65,7 +65,22 @@ export class WebhookHandler {
           let approvals;
           
           try {
-            approvals = JSON.parse(responseText);
+            // Clean the response text before parsing
+            const cleanedText = responseText
+              .replace(/[\n\r]/g, '\\n') // Replace newlines with escaped newlines
+              .replace(/[\t]/g, '\\t')   // Replace tabs with escaped tabs
+              .replace(/\s+/g, ' ')      // Normalize whitespace
+              .replace(/\\/g, '\\\\')    // Escape backslashes
+              .replace(/"/g, '\\"');     // Escape quotes
+            
+            elizaLogger.log('Cleaned response text:', cleanedText);
+            
+            try {
+              approvals = JSON.parse(cleanedText);
+            } catch (secondError) {
+              // If that fails, try parsing the original text
+              approvals = JSON.parse(responseText);
+            }
           } catch (parseError) {
             elizaLogger.error('Failed to parse approvals response:', {
               responseText,
