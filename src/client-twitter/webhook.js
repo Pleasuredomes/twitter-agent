@@ -3,15 +3,19 @@ import fetch from "node-fetch";
 
 export class WebhookHandler {
   constructor(webhookUrl, logToConsole = true, runtime) {
-    // Set up webhook URL for sending to Make
+    // Set up webhook URLs for content storage and approval system
     this.webhookUrls = {
-      post: webhookUrl || process.env.MAKE_WEBHOOK_URL,
-      reply: webhookUrl || process.env.MAKE_WEBHOOK_URL,
-      mention: webhookUrl || process.env.MAKE_WEBHOOK_URL,
-      dm: webhookUrl || process.env.MAKE_WEBHOOK_URL,
-      interaction: webhookUrl || process.env.MAKE_WEBHOOK_URL,
-      error: webhookUrl || process.env.MAKE_WEBHOOK_URL,
-      approval: webhookUrl || process.env.MAKE_WEBHOOK_URL
+      // Content Storage URLs
+      post: process.env.MAKE_WEBHOOK_URL_POSTS,
+      reply: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
+      mention: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
+      dm: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
+      interaction: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
+      error: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
+      
+      // Approval System URLs
+      approval: process.env.MAKE_WEBHOOK_URL_APPROVAL_REQUEST,
+      approval_checks: process.env.MAKE_WEBHOOK_URL_APPROVAL_CHECKS
     };
     this.logToConsole = logToConsole;
     this.runtime = runtime;
@@ -26,7 +30,7 @@ export class WebhookHandler {
     const checkApprovals = async () => {
       try {
         // Send request to Make to check for approvals
-        const response = await fetch(this.webhookUrls.approval, {
+        const response = await fetch(this.webhookUrls.approval_checks, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'

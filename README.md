@@ -341,17 +341,34 @@ You need to create two scenarios in Make:
    - Connection: Your Airtable account
    - Base: Your approval base
    - Table: Content Approvals
-   - Map these fields:
+   - For each field, get the Field ID from Airtable:
+     1. Go to your table
+     2. Click field dropdown → "Customize field"
+     3. Copy the Field ID (starts with "fld")
+   - Map these fields using the exact Field IDs:
      ```
-     approval_id: {{webhook.data.data.approval_id}}
-     content_type: {{webhook.data.data.content_type}}
-     content: {{webhook.data.data.content}}
-     status: "pending"
-     agent_name: {{webhook.data.data.agent.name}}
-     agent_username: {{webhook.data.data.agent.username}}
-     timestamp: {{webhook.data.timestamp}}
-     context: {{webhook.data.data.context}}
+     [Field ID for approval_id]: {{webhook.data.data.approval_id}}
+     [Field ID for content_type]: {{webhook.data.data.content_type}}
+     [Field ID for content]: {{webhook.data.data.content}}
+     [Field ID for status]: pending
+     [Field ID for agent_name]: {{webhook.data.data.agent.name}}
+     [Field ID for agent_username]: {{webhook.data.data.agent.username}}
+     [Field ID for timestamp]: {{formatDate(toNumber(webhook.data.timestamp); "DD/MM/YYYY HH:mm:ss")}}
+     [Field ID for context]: {{json(ifempty(webhook.data.data.context; {}))}}
+     [Field ID for modified_content]: 
+     [Field ID for reason]: 
      ```
+   
+   Alternative for context field if above doesn't work:
+   ```
+   [Field ID for context]: {{replace(json(ifempty(webhook.data.data.context; {})); '"'; '')}}
+   ```
+   
+   Important:
+   - Use toNumber() for timestamp to ensure proper number formatting
+   - Use toString() for context field with empty object fallback
+   - Leave optional fields completely empty (no placeholder text)
+   - Make sure to use the exact Field IDs from your Airtable
 
 #### Scenario 2: Handle Approval Checks
 
@@ -408,10 +425,14 @@ You need to create two scenarios in Make:
          "agent": {
            "name": "TestAgent",
            "username": "test_user"
-         }
-       }
+         },
+         "context": ""
+       },
+       "timestamp": "'$(date +%s%3N)'"
      }'
    ```
+
+   Note: This command uses `date` to generate current timestamp. On Windows, replace `$(date +%s%3N)` with a Unix timestamp (e.g., `1634567890000`).
 
 2. **Test Approval Check**:
    ```bash
