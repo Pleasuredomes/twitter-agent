@@ -65,53 +65,68 @@ export class WebhookHandler {
           let approvals;
           
           try {
-            // Clean the response text before parsing
-            const cleanedText = responseText
-              .replace(/[\n\r]/g, '\\n') // Replace newlines with escaped newlines
-              .replace(/[\t]/g, '\\t')   // Replace tabs with escaped tabs
-              .replace(/\s+/g, ' ')      // Normalize whitespace
-              .replace(/\\/g, '\\\\')    // Escape backslashes
-              .replace(/"/g, '\\"');     // Escape quotes
+            // Handle the response which might be wrapped in responseText
+            let jsonStr = responseText;
             
-            elizaLogger.log('Cleaned response text:', cleanedText);
-            
+            // If it's wrapped in a responseText field, extract it
             try {
-              approvals = JSON.parse(cleanedText);
-            } catch (secondError) {
-              // If that fails, try parsing the original text
-              approvals = JSON.parse(responseText);
+              const wrapper = JSON.parse(responseText);
+              if (wrapper.responseText) {
+                jsonStr = wrapper.responseText;
+              }
+            } catch (e) {
+              // If parsing as wrapper fails, use the original response
             }
+
+            // Now parse the actual approvals data
+            try {
+              approvals = JSON.parse(jsonStr);
+            } catch (e) {
+              // If that fails, try evaluating it as a JavaScript string
+              // This handles cases where the string has escaped quotes
+              approvals = eval('(' + jsonStr + ')');
+            }
+
+            elizaLogger.log('Successfully parsed approvals:', approvals);
           } catch (parseError) {
             elizaLogger.error('Failed to parse approvals response:', {
               responseText,
               error: parseError.message
             });
+            return;
           }
 
           if (approvals && Array.isArray(approvals)) {
-            elizaLogger.log('Received approvals:', approvals);
-            
             // Process each approval
             for (const approval of approvals) {
               const { approval_id, approved, modified_content, reason } = approval;
               
-              elizaLogger.log('Processing approval:', {
-                approval_id,
-                approved,
-                has_modified_content: !!modified_content,
-                reason
-              });
-
+              // Ensure we have valid data
               if (!approval_id) {
                 elizaLogger.error('Received approval without approval_id:', approval);
                 continue;
               }
 
+              // Clean the content and reason
+              const cleanContent = modified_content ? 
+                String(modified_content).replace(/[\n\r]+/g, ' ').trim() : 
+                null;
+              const cleanReason = reason ? 
+                String(reason).replace(/[\n\r]+/g, ' ').trim() : 
+                '';
+
+              elizaLogger.log('Processing approval:', {
+                approval_id,
+                approved,
+                has_modified_content: !!cleanContent,
+                reason: cleanReason
+              });
+
               await this.handleApprovalResponse(
                 approval_id,
                 approved,
-                modified_content ? String(modified_content).trim() : null,
-                reason ? String(reason).trim() : ''
+                cleanContent,
+                cleanReason
               );
             }
           } else {
