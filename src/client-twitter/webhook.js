@@ -17,6 +17,14 @@ export class WebhookHandler {
       approval: process.env.MAKE_WEBHOOK_URL_APPROVAL_REQUEST,
       approval_checks: process.env.MAKE_WEBHOOK_URL_APPROVAL_CHECKS
     };
+
+    // Validate webhook URLs
+    Object.entries(this.webhookUrls).forEach(([type, url]) => {
+      if (!url) {
+        elizaLogger.error(`Missing webhook URL for type: ${type}`);
+      }
+    });
+
     this.logToConsole = logToConsole;
     this.runtime = runtime;
     this.pendingApprovals = new Map();
@@ -77,8 +85,8 @@ export class WebhookHandler {
         data: {
           approval_id: approvalId,
           content_type: type,
-          content,
-          context,
+          content: typeof content === 'object' ? JSON.stringify(content) : content,
+          context: typeof context === 'object' ? JSON.stringify(context) : context,
           agent: {
             name: this.runtime.character.name,
             username: this.runtime.getSetting("TWITTER_USERNAME")
@@ -90,7 +98,7 @@ export class WebhookHandler {
       elizaLogger.log('Queuing content for approval:', {
         approvalId,
         type,
-        content: typeof content === 'string' ? content : JSON.stringify(content)
+        content: typeof content === 'object' ? JSON.stringify(content) : content
       });
 
       // Store in pending queue
@@ -200,6 +208,7 @@ export class WebhookHandler {
         payload: JSON.stringify(event, null, 2)
       });
 
+      // Send to storage webhook
       const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: {
@@ -207,6 +216,15 @@ export class WebhookHandler {
         },
         body: JSON.stringify(event)
       });
+
+      // Also send to approval webhook if it's a content type that needs approval
+      if (['post', 'reply', 'mention', 'dm'].includes(event.type)) {
+        await this.queueForApproval(
+          event.data.content,
+          event.type,
+          event.data.context || {}
+        );
+      }
 
       // Log the response
       const responseBody = await response.text();
