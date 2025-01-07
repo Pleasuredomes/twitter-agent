@@ -37,6 +37,8 @@ export class WebhookHandler {
   async startPollingApprovals() {
     const checkApprovals = async () => {
       try {
+        elizaLogger.log('Checking for approvals...');
+        
         // Send request to Make to check for approvals
         const response = await fetch(this.webhookUrls.approval_checks, {
           method: 'POST',
@@ -57,12 +59,32 @@ export class WebhookHandler {
 
         if (response.ok) {
           const approvals = await response.json();
+          elizaLogger.log('Received approvals:', approvals);
           
           // Process each approval
           for (const approval of approvals) {
             const { approval_id, approved, modified_content, reason } = approval;
+            
+            elizaLogger.log('Processing approval:', {
+              approval_id,
+              approved,
+              has_modified_content: !!modified_content,
+              reason
+            });
+
+            if (!approval_id) {
+              elizaLogger.error('Received approval without approval_id:', approval);
+              continue;
+            }
+
             await this.handleApprovalResponse(approval_id, approved, modified_content, reason);
           }
+        } else {
+          const errorText = await response.text();
+          elizaLogger.error('Error response from approval check:', {
+            status: response.status,
+            error: errorText
+          });
         }
       } catch (error) {
         elizaLogger.error('Error checking approvals:', error);
@@ -80,12 +102,18 @@ export class WebhookHandler {
   async queueForApproval(content, type, context = {}) {
     try {
       const approvalId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Ensure content is properly formatted
+      const formattedContent = typeof content === 'object' ? 
+        (content.text || JSON.stringify(content)) : 
+        content;
+
       const approvalPayload = {
         type: 'approval_request',
         data: {
           approval_id: approvalId,
           content_type: type,
-          content: typeof content === 'object' ? JSON.stringify(content) : content,
+          content: formattedContent,
           context: typeof context === 'object' ? JSON.stringify(context) : context,
           agent: {
             name: this.runtime.character.name,
@@ -98,7 +126,7 @@ export class WebhookHandler {
       elizaLogger.log('Queuing content for approval:', {
         approvalId,
         type,
-        content: typeof content === 'object' ? JSON.stringify(content) : content
+        content: formattedContent
       });
 
       // Store in pending queue
@@ -144,39 +172,58 @@ export class WebhookHandler {
 
   // Handle an approval response from airtable/webhook
   async handleApprovalResponse(approvalId, approved, modifiedContent = null, reason = '') {
-    const pending = this.pendingApprovals.get(approvalId);
-    if (!pending) {
-      elizaLogger.error(`No pending approval found for ID: ${approvalId}`);
-      return;
-    }
+    try {
+      elizaLogger.log('Handling approval response:', {
+        approvalId,
+        approved,
+        hasModifiedContent: !!modifiedContent,
+        reason
+      });
 
-    const result = {
-      approved,
-      modifiedContent: modifiedContent || pending.payload.data.content,
-      reason,
-      approvalId
-    };
-
-    // Update status in cache
-    await this.runtime.cacheManager.set(
-      `pending_approvals/${approvalId}`,
-      {
-        ...pending,
-        status: approved ? 'approved' : 'rejected',
-        result
+      const pending = this.pendingApprovals.get(approvalId);
+      if (!pending) {
+        // Try to get from cache
+        const cached = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
+        if (!cached) {
+          elizaLogger.error(`No pending approval found for ID: ${approvalId}`);
+          return;
+        }
+        // Restore from cache to pending queue
+        this.pendingApprovals.set(approvalId, cached);
       }
-    );
 
-    // Remove from pending queue
-    this.pendingApprovals.delete(approvalId);
+      const result = {
+        approved,
+        modifiedContent: modifiedContent || (pending?.payload?.data?.content),
+        reason,
+        approvalId
+      };
 
-    // Log the approval/rejection
-    elizaLogger.log(`Content ${approved ? 'approved' : 'rejected'} for ID: ${approvalId}`, {
-      reason,
-      modifiedContent: modifiedContent ? 'modified' : 'unchanged'
-    });
+      // Update status in cache
+      await this.runtime.cacheManager.set(
+        `pending_approvals/${approvalId}`,
+        {
+          ...pending,
+          status: approved ? 'approved' : 'rejected',
+          result
+        }
+      );
 
-    return result;
+      // Remove from pending queue
+      this.pendingApprovals.delete(approvalId);
+
+      // Log the approval/rejection
+      elizaLogger.log(`Content ${approved ? 'approved' : 'rejected'} for ID: ${approvalId}`, {
+        reason,
+        modifiedContent: modifiedContent ? 'modified' : 'unchanged',
+        originalContent: pending?.payload?.data?.content
+      });
+
+      return result;
+    } catch (error) {
+      elizaLogger.error('Error handling approval response:', error);
+      throw error;
+    }
   }
 
   // Check if a specific approval is still pending
