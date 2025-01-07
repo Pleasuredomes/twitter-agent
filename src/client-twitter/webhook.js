@@ -71,13 +71,12 @@ export class WebhookHandler {
               responseText,
               error: parseError.message
             });
-            return;
           }
 
-          elizaLogger.log('Received approvals:', approvals);
-          
-          // Process each approval
-          if (Array.isArray(approvals)) {
+          if (approvals && Array.isArray(approvals)) {
+            elizaLogger.log('Received approvals:', approvals);
+            
+            // Process each approval
             for (const approval of approvals) {
               const { approval_id, approved, modified_content, reason } = approval;
               
@@ -101,7 +100,7 @@ export class WebhookHandler {
               );
             }
           } else {
-            elizaLogger.error('Received non-array approvals response:', approvals);
+            elizaLogger.log('No new approvals to process');
           }
         } else {
           const errorText = await response.text();
@@ -112,13 +111,15 @@ export class WebhookHandler {
         }
       } catch (error) {
         elizaLogger.error('Error checking approvals:', error);
+      } finally {
+        // Always schedule the next check, even if there was an error
+        setTimeout(checkApprovals, 30000);
+        elizaLogger.log('Next approval check scheduled in 30 seconds');
       }
-
-      // Check again in 30 seconds
-      setTimeout(checkApprovals, 30000);
     };
 
-    // Start the polling loop
+    // Start the polling loop immediately
+    elizaLogger.log('Starting approval polling...');
     checkApprovals();
   }
 
