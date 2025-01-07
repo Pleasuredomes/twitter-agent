@@ -39,45 +39,69 @@ export class WebhookHandler {
       try {
         elizaLogger.log('Checking for approvals...');
         
+        // Clean and prepare the payload
+        const payload = {
+          type: 'check_approvals',
+          data: {
+            agent: {
+              name: this.runtime.character.name,
+              username: this.runtime.getSetting("TWITTER_USERNAME")
+            }
+          },
+          timestamp: Date.now()
+        };
+
         // Send request to Make to check for approvals
         const response = await fetch(this.webhookUrls.approval_checks, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({
-            type: 'check_approvals',
-            data: {
-              agent: {
-                name: this.runtime.character.name,
-                username: this.runtime.getSetting("TWITTER_USERNAME")
-              }
-            },
-            timestamp: Date.now()
-          })
+          body: JSON.stringify(payload)
         });
 
         if (response.ok) {
-          const approvals = await response.json();
+          const responseText = await response.text();
+          let approvals;
+          
+          try {
+            approvals = JSON.parse(responseText);
+          } catch (parseError) {
+            elizaLogger.error('Failed to parse approvals response:', {
+              responseText,
+              error: parseError.message
+            });
+            return;
+          }
+
           elizaLogger.log('Received approvals:', approvals);
           
           // Process each approval
-          for (const approval of approvals) {
-            const { approval_id, approved, modified_content, reason } = approval;
-            
-            elizaLogger.log('Processing approval:', {
-              approval_id,
-              approved,
-              has_modified_content: !!modified_content,
-              reason
-            });
+          if (Array.isArray(approvals)) {
+            for (const approval of approvals) {
+              const { approval_id, approved, modified_content, reason } = approval;
+              
+              elizaLogger.log('Processing approval:', {
+                approval_id,
+                approved,
+                has_modified_content: !!modified_content,
+                reason
+              });
 
-            if (!approval_id) {
-              elizaLogger.error('Received approval without approval_id:', approval);
-              continue;
+              if (!approval_id) {
+                elizaLogger.error('Received approval without approval_id:', approval);
+                continue;
+              }
+
+              await this.handleApprovalResponse(
+                approval_id,
+                approved,
+                modified_content ? String(modified_content).trim() : null,
+                reason ? String(reason).trim() : ''
+              );
             }
-
-            await this.handleApprovalResponse(approval_id, approved, modified_content, reason);
+          } else {
+            elizaLogger.error('Received non-array approvals response:', approvals);
           }
         } else {
           const errorText = await response.text();
