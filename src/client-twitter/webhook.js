@@ -219,10 +219,56 @@ export class WebhookHandler {
 
       // Also send to approval webhook if it's a content type that needs approval
       if (['post', 'reply', 'mention', 'dm'].includes(event.type)) {
+        // Format content and context based on event type
+        let formattedContent = event.data.content;
+        let formattedContext = {};
+
+        switch (event.type) {
+          case 'post':
+            formattedContent = typeof event.data.content === 'object' ? 
+              event.data.content.text || JSON.stringify(event.data.content) : 
+              event.data.content;
+            break;
+          
+          case 'reply':
+            formattedContent = typeof event.data.content === 'object' ? 
+              event.data.content.text || JSON.stringify(event.data.content) : 
+              event.data.content;
+            formattedContext = {
+              in_reply_to: event.data.in_reply_to,
+              conversation_id: event.data.conversation_id
+            };
+            break;
+          
+          case 'mention':
+            formattedContent = typeof event.data.content === 'object' ? 
+              event.data.content.text || JSON.stringify(event.data.content) : 
+              event.data.content;
+            formattedContext = {
+              tweet_id: event.data.tweet_id,
+              user: event.data.user
+            };
+            break;
+          
+          case 'dm':
+            formattedContent = typeof event.data.content === 'object' ? 
+              event.data.content.text || JSON.stringify(event.data.content) : 
+              event.data.content;
+            formattedContext = {
+              conversation_id: event.data.conversation_id,
+              recipient: event.data.recipient
+            };
+            break;
+        }
+
         await this.queueForApproval(
-          event.data.content,
+          formattedContent,
           event.type,
-          event.data.context || {}
+          {
+            ...formattedContext,
+            original_event: event.type,
+            timestamp: event.timestamp
+          }
         );
       }
 
