@@ -166,6 +166,42 @@ export class WebhookHandler {
   // Queue tweet for approval
   async queueForApproval(content, type, context = {}) {
     try {
+        // For mentions, check if we already have a pending approval for this tweet_id
+        if (type === 'mention') {
+            const tweetId = context.tweet_id;
+            if (tweetId) {
+                // Check existing approvals in the sheet
+                const response = await this.sheets.spreadsheets.values.get({
+                    spreadsheetId: this.sheetsConfig.spreadsheetId,
+                    range: this.sheetsConfig.ranges.approvals
+                });
+
+                if (response.data.values) {
+                    const headers = response.data.values[0];
+                    const contextIndex = headers.indexOf('context');
+                    const statusIndex = headers.indexOf('status');
+                    
+                    // Look for any existing approval for this tweet_id
+                    const existingApproval = response.data.values.slice(1).find(row => {
+                        if (!row[contextIndex]) return false;
+                        try {
+                            const rowContext = JSON.parse(row[contextIndex]);
+                            const rowStatus = row[statusIndex]?.toLowerCase();
+                            return rowContext.tweet_id === tweetId && 
+                                   (rowStatus === 'pending' || rowStatus === 'approved');
+                        } catch (e) {
+                            return false;
+                        }
+                    });
+
+                    if (existingApproval) {
+                        elizaLogger.log('Skipping duplicate mention approval for tweet:', tweetId);
+                        return null;
+                    }
+                }
+            }
+        }
+
         const approvalId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
         // Format content based on type
@@ -363,7 +399,25 @@ export class WebhookHandler {
                         if (pendingApproval.payload.content_type === 'mention') {
                             // For mentions, reply to the original tweet
                             const replyToId = contextData?.tweet_id;
-                            elizaLogger.log("📝 Replying to tweet:", {
+                            if (!replyToId) {
+                                throw new Error('No tweet_id found for mention reply');
+                            }
+                            elizaLogger.log("📝 Replying to mention:", {
+                                replyToId,
+                                content: tweetContent,
+                                originalTweet: contextData?.content
+                            });
+                            postResult = await twitterClient.sendTweet(
+                                tweetContent,
+                                replyToId
+                            );
+                        } else if (pendingApproval.payload.content_type === 'reply') {
+                            // For replies, use the in_reply_to_id
+                            const replyToId = contextData?.in_reply_to_id;
+                            if (!replyToId) {
+                                throw new Error('No in_reply_to_id found for reply');
+                            }
+                            elizaLogger.log("📝 Sending reply:", {
                                 replyToId,
                                 content: tweetContent
                             });
