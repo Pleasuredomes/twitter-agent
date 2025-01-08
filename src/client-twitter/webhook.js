@@ -102,67 +102,64 @@ export class WebhookHandler {
   // Check approval status directly in Google Sheets
   async checkApprovalStatus(approvalId) {
     try {
-      elizaLogger.log('Checking approval status in Google Sheets for:', approvalId);
-      
-      // Only fetch the specific row we need using a filter formula
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: this.sheetsConfig.ranges.approvals,
-        valueRenderOption: 'UNFORMATTED_VALUE',
-        // Use a filter to only get the row we need
-        majorDimension: 'ROWS',
-        // Get headers first
-        ranges: [
-          `${this.sheetsConfig.ranges.approvals.split('!')[0]}!1:1`,
-          // Then get matching row using filter
-          `${this.sheetsConfig.ranges.approvals.split('!')[0]}!A:Z`
-        ]
-      });
+        elizaLogger.log("🔍 Checking approval status for:", approvalId);
+        
+        // Get the sheet data
+        const response = await this.sheets.spreadsheets.values.get({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals,
+            valueRenderOption: 'UNFORMATTED_VALUE',
+            majorDimension: 'ROWS'
+        });
 
-      if (!response.data.values || response.data.values.length === 0) {
-        elizaLogger.error('No data found in approvals sheet');
-        return { status: 'pending' };
-      }
+        if (!response.data || !response.data.values) {
+            elizaLogger.warn("⚠️ No data found in approvals sheet");
+            return null;
+        }
 
-      const headers = response.data.valueRanges[0].values[0];
-      const approvalIdIndex = headers.indexOf('approval_id');
-      const statusIndex = headers.indexOf('status');
-      const modifiedContentIndex = headers.indexOf('modified_content');
-      const reasonIndex = headers.indexOf('reason');
+        // Get header row to find column indices
+        const headers = response.data.values[0];
+        const approvalIdCol = headers.indexOf('approval_id');
+        const statusCol = headers.indexOf('status');
+        const modifiedContentCol = headers.indexOf('modified_content');
+        const reasonCol = headers.indexOf('reason');
 
-      // Find the specific row for this approval
-      const rows = response.data.valueRanges[1].values;
-      const record = rows.find(row => row[approvalIdIndex] === approvalId);
-      
-      if (!record) {
-        elizaLogger.error('No record found for approval ID:', approvalId);
-        return { status: 'pending' };
-      }
+        if (approvalIdCol === -1) {
+            throw new Error('Could not find approval_id column in sheet');
+        }
 
-      const status = (record[statusIndex] || 'pending').toLowerCase();
-      
-      if (status !== 'pending') {
-        // Process the approval/rejection
-        await this.handleApprovalResponse(
-          approvalId,
-          status === 'approved',
-          record[modifiedContentIndex],
-          record[reasonIndex]
-        );
-      }
+        // Find the row with matching approval ID
+        const row = response.data.values.find(row => row[approvalIdCol] === approvalId);
+        
+        if (!row) {
+            elizaLogger.log("ℹ️ No matching approval found for ID:", approvalId);
+            return null;
+        }
 
-      // Clear any objects we don't need anymore
-      response.data = null;
+        const status = row[statusCol];
+        const modifiedContent = row[modifiedContentCol];
+        const reason = row[reasonCol];
 
-      return {
-        status,
-        modified_content: record[modifiedContentIndex],
-        reason: record[reasonIndex]
-      };
+        elizaLogger.log("✅ Found approval status:", {
+            approvalId,
+            status,
+            hasModifiedContent: !!modifiedContent,
+            reason
+        });
 
+        return {
+            status,
+            modifiedContent,
+            reason
+        };
     } catch (error) {
-      elizaLogger.error('Error checking approval status:', error);
-      throw error;
+        elizaLogger.error("❌ Error checking approval status:", {
+            error,
+            approvalId,
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals
+        });
+        throw error;
     }
   }
 
