@@ -1,88 +1,134 @@
 import { elizaLogger } from "@ai16z/eliza";
-import fetch from "node-fetch";
+import { google } from 'googleapis';
+import { GoogleAuth } from 'google-auth-library';
 
 export class WebhookHandler {
   constructor(webhookUrl, logToConsole = true, runtime) {
-    // Set up webhook URLs for content storage and approval system
-    this.webhookUrls = {
-      // Content Storage URLs
-      post: process.env.MAKE_WEBHOOK_URL_POSTS,
-      reply: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
-      mention: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
-      dm: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
-      interaction: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
-      error: process.env.MAKE_WEBHOOK_URL_INTERACTIONS,
-      
-      // Approval System URLs
-      approval: process.env.MAKE_WEBHOOK_URL_APPROVAL_REQUEST
-    };
-
-    // Airtable configuration
-    this.airtableConfig = {
-      baseId: process.env.AIRTABLE_BASE_ID,
-      tableId: process.env.AIRTABLE_TABLE_ID,
-      apiKey: process.env.AIRTABLE_API_KEY
-    };
-
-    // Validate webhook URLs
-    Object.entries(this.webhookUrls).forEach(([type, url]) => {
-      if (!url) {
-        elizaLogger.error(`Missing webhook URL for type: ${type}`);
+    // Google Sheets configuration
+    this.sheetsConfig = {
+      spreadsheetId: process.env.GOOGLE_SHEETS_SPREADSHEET_ID,
+      credentials: JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS || '{}'),
+      ranges: {
+        posts: 'Posts!A:Z',
+        interactions: 'Interactions!A:Z',
+        approvals: 'Approvals!A:Z'
+      },
+      headers: {
+        posts: [
+          'tweet_id',
+          'content',
+          'media_urls',
+          'timestamp',
+          'permanent_url',
+          'in_reply_to_id',
+          'conversation_id',
+          'approval_id',
+          'agent_name',
+          'agent_username',
+          'status'
+        ],
+        interactions: [
+          'type',              // mention, reply, dm, etc
+          'tweet_id',          // ID of the incoming tweet
+          'content',           // Content of the incoming tweet
+          'author_username',   // Username of the tweet author
+          'author_name',       // Display name of the tweet author
+          'timestamp',         // When the interaction occurred
+          'permanent_url',     // URL to the tweet
+          'in_reply_to_id',    // ID of the tweet being replied to
+          'conversation_id',   // Thread/conversation ID
+          'agent_response',    // Our agent's response if any
+          'response_tweet_id', // ID of our response tweet if any
+          'agent_name',        // Name of our agent
+          'agent_username',    // Username of our agent
+          'context'           // Additional context as JSON
+        ],
+        approvals: [
+          'approval_id',       // Unique ID for the approval request
+          'content_type',      // Type of content (post, reply, mention, dm)
+          'content',           // Original content to be approved
+          'modified_content',  // Modified content after review (if any)
+          'context',          // Additional context as JSON
+          'agent_name',       // Name of the agent
+          'agent_username',   // Username of the agent
+          'status',          // pending/approved/rejected
+          'timestamp',       // When the request was created
+          'review_timestamp', // When the content was reviewed
+          'reviewer',        // Who reviewed the content (optional)
+          'reason',          // Reason for approval/rejection
+          'tweet_id'         // ID of the resulting tweet (if approved and posted)
+        ]
       }
-    });
+    };
 
-    // Validate Airtable config
-    if (!this.airtableConfig.baseId || !this.airtableConfig.tableId || !this.airtableConfig.apiKey) {
-      elizaLogger.error('Missing Airtable configuration');
+    // Validate Google Sheets config
+    if (!this.sheetsConfig.spreadsheetId || !this.sheetsConfig.credentials) {
+      elizaLogger.error('Missing Google Sheets configuration');
     }
+
+    // Initialize Google Sheets API
+    this.initGoogleSheets();
 
     this.logToConsole = logToConsole;
     this.runtime = runtime;
     this.pendingApprovals = new Map();
   }
 
-  // Check approval status directly in Airtable
-  async checkApprovalStatus(approvalId) {
+  async initGoogleSheets() {
     try {
-      elizaLogger.log('Checking approval status in Airtable for:', approvalId);
-      
-      const url = `https://api.airtable.com/v0/${this.airtableConfig.baseId}/${this.airtableConfig.tableId}`;
-      const response = await fetch(`${url}?filterByFormula=approval_id="${approvalId}"`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${this.airtableConfig.apiKey}`,
-          'Content-Type': 'application/json'
-        }
+      const auth = new GoogleAuth({
+        credentials: this.sheetsConfig.credentials,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets']
       });
 
-      if (!response.ok) {
-        throw new Error(`Failed to check status with ${response.status}`);
-      }
+      this.sheets = google.sheets({ version: 'v4', auth });
+    } catch (error) {
+      elizaLogger.error('Error initializing Google Sheets:', error);
+      throw error;
+    }
+  }
 
-      const data = await response.json();
+  // Check approval status directly in Google Sheets
+  async checkApprovalStatus(approvalId) {
+    try {
+      elizaLogger.log('Checking approval status in Google Sheets for:', approvalId);
       
-      if (!data.records || data.records.length === 0) {
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals,
+        valueRenderOption: 'UNFORMATTED_VALUE'
+      });
+
+      const rows = response.data.values || [];
+      const headers = rows[0] || [];
+      const approvalIdIndex = headers.indexOf('approval_id');
+      const statusIndex = headers.indexOf('status');
+      const modifiedContentIndex = headers.indexOf('modified_content');
+      const reasonIndex = headers.indexOf('reason');
+
+      const record = rows.find(row => row[approvalIdIndex] === approvalId);
+      
+      if (!record) {
         elizaLogger.error('No record found for approval ID:', approvalId);
         return { status: 'pending' };
       }
 
-      const record = data.records[0].fields;
-      const status = record.Status?.toLowerCase() || 'pending';
+      const status = (record[statusIndex] || 'pending').toLowerCase();
       
       if (status !== 'pending') {
         // Process the approval/rejection
         await this.handleApprovalResponse(
           approvalId,
           status === 'approved',
-          record.modified_content,
-          record.reason
+          record[modifiedContentIndex],
+          record[reasonIndex]
         );
       }
 
       return {
         status,
-        modified_content: record.modified_content,
-        reason: record.reason
+        modified_content: record[modifiedContentIndex],
+        reason: record[reasonIndex]
       };
 
     } catch (error) {
@@ -108,53 +154,78 @@ export class WebhookHandler {
         type
       });
 
-      const approvalPayload = {
-        type: 'approval_request',
-        data: {
-          approval_id: approvalId,
-          content_type: type,
-          content: formattedContent,
-          context: typeof context === 'object' ? JSON.stringify(context) : context,
-          agent: {
-            name: this.runtime.character.name,
-            username: this.runtime.getSetting("TWITTER_USERNAME")
-          }
-        },
-        timestamp: Date.now()
+      const approvalData = {
+        approval_id: approvalId,
+        content_type: type,
+        content: formattedContent,
+        modified_content: '',
+        context: typeof context === 'object' ? JSON.stringify(context) : context,
+        agent_name: this.runtime.character.name,
+        agent_username: this.runtime.getSetting("TWITTER_USERNAME"),
+        status: 'pending',
+        timestamp: new Date().toISOString(),
+        review_timestamp: '',
+        reviewer: '',
+        reason: '',
+        tweet_id: ''
       };
 
-      elizaLogger.log('Queuing content for approval:', {
-        approvalId,
-        type,
-        content: formattedContent,
-        context: context
+      // Check if headers exist, if not add them
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals.split('!')[0] + '!A1:1'
+      });
+
+      if (!response.data.values || response.data.values.length === 0) {
+        // Add headers first
+        await this.sheets.spreadsheets.values.append({
+          spreadsheetId: this.sheetsConfig.spreadsheetId,
+          range: this.sheetsConfig.ranges.approvals,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: {
+            values: [this.sheetsConfig.headers.approvals]
+          }
+        });
+      }
+
+      // Add to Google Sheets
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[
+            approvalData.approval_id,
+            approvalData.content_type,
+            approvalData.content,
+            approvalData.modified_content,
+            approvalData.context,
+            approvalData.agent_name,
+            approvalData.agent_username,
+            approvalData.status,
+            approvalData.timestamp,
+            approvalData.review_timestamp,
+            approvalData.reviewer,
+            approvalData.reason,
+            approvalData.tweet_id
+          ]]
+        }
       });
 
       // Store in pending queue
       this.pendingApprovals.set(approvalId, {
-        payload: approvalPayload,
+        payload: approvalData,
         status: 'pending',
         timestamp: Date.now()
       });
-
-      // Send to Make webhook
-      const response = await fetch(this.webhookUrls.approval, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(approvalPayload)
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to queue for approval with status ${response.status}`);
-      }
 
       // Store in cache for persistence
       await this.runtime.cacheManager.set(
         `pending_approvals/${approvalId}`,
         {
-          payload: approvalPayload,
+          payload: approvalData,
           status: 'pending',
           timestamp: Date.now()
         }
@@ -183,7 +254,7 @@ export class WebhookHandler {
     }
   }
 
-  // Handle an approval response from airtable/webhook
+  // Handle an approval response from Google Sheets
   async handleApprovalResponse(approvalId, approved, modifiedContent = null, reason = '') {
     try {
       elizaLogger.log('Handling approval response:', {
@@ -207,10 +278,70 @@ export class WebhookHandler {
 
       const result = {
         approved,
-        modifiedContent: modifiedContent || (pending?.payload?.data?.content),
+        modifiedContent: modifiedContent || (pending?.payload?.content),
         reason,
         approvalId
       };
+
+      // Update status in Google Sheets
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals
+      });
+
+      const rows = response.data.values || [];
+      const headers = rows[0] || [];
+      const approvalIdIndex = headers.indexOf('approval_id');
+      const rowIndex = rows.findIndex(row => row[approvalIdIndex] === approvalId);
+
+      if (rowIndex !== -1) {
+        const updateData = [
+          approvalId,
+          pending?.payload?.content_type,
+          pending?.payload?.content,
+          modifiedContent || '',
+          pending?.payload?.context,
+          pending?.payload?.agent_name,
+          pending?.payload?.agent_username,
+          approved ? 'approved' : 'rejected',
+          pending?.payload?.timestamp,
+          new Date().toISOString(), // review_timestamp
+          '', // reviewer (could be added as a parameter if needed)
+          reason || '',
+          '' // tweet_id (will be updated after posting)
+        ];
+
+        await this.sheets.spreadsheets.values.update({
+          spreadsheetId: this.sheetsConfig.spreadsheetId,
+          range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!A${rowIndex + 1}`,
+          valueInputOption: 'RAW',
+          requestBody: {
+            values: [updateData]
+          }
+        });
+
+        // If approved and successfully posted, update the tweet_id
+        if (approved) {
+          const tweetResult = await this.runtime.emit('content_approved', {
+            type: pending?.payload?.content_type,
+            content: modifiedContent || pending?.payload?.content,
+            context: pending?.payload?.context,
+            approvalId
+          });
+
+          if (tweetResult?.tweet_id) {
+            // Update the tweet_id in the sheet
+            await this.sheets.spreadsheets.values.update({
+              spreadsheetId: this.sheetsConfig.spreadsheetId,
+              range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!M${rowIndex + 1}`, // Column M is tweet_id
+              valueInputOption: 'RAW',
+              requestBody: {
+                values: [[tweetResult.tweet_id]]
+              }
+            });
+          }
+        }
+      }
 
       // Update status in cache
       await this.runtime.cacheManager.set(
@@ -225,36 +356,6 @@ export class WebhookHandler {
       // Remove from pending queue
       this.pendingApprovals.delete(approvalId);
 
-      // Log the approval/rejection
-      elizaLogger.log(`Content ${approved ? 'approved' : 'rejected'} for ID: ${approvalId}`, {
-        reason,
-        modifiedContent: modifiedContent ? 'modified' : 'unchanged',
-        originalContent: pending?.payload?.data?.content
-      });
-
-      // If approved, post to Twitter
-      if (approved && pending?.payload?.data) {
-        const { content_type, content } = pending.payload.data;
-        const finalContent = modifiedContent || content;
-
-        elizaLogger.log('Posting approved content to Twitter:', {
-          type: content_type,
-          content: finalContent
-        });
-
-        try {
-          // Emit the approved event for the runtime to handle
-          await this.runtime.emit('content_approved', {
-            type: content_type,
-            content: finalContent,
-            context: pending.payload.data.context,
-            approvalId
-          });
-        } catch (error) {
-          elizaLogger.error('Error posting approved content to Twitter:', error);
-        }
-      }
-
       return result;
     } catch (error) {
       elizaLogger.error('Error handling approval response:', error);
@@ -262,135 +363,98 @@ export class WebhookHandler {
     }
   }
 
-  // Check if a specific approval is still pending
-  async isApprovalPending(approvalId) {
-    const cached = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
-    return cached?.status === 'pending';
-  }
-
-  // Get the status and result of an approval
-  async getApprovalStatus(approvalId) {
-    return await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
-  }
-
+  // Send data to Google Sheets
   async sendToWebhook(event) {
     try {
-      // Get the appropriate webhook URL for the event type
-      const webhookUrl = this.webhookUrls[event.type];
-      
-      if (!webhookUrl) {
-        elizaLogger.error(`No webhook URL configured for event type: ${event.type}`);
-        return;
+      // Determine which sheet to use based on event type
+      let range;
+      let rowData;
+
+      if (event.type === 'post') {
+        range = this.sheetsConfig.ranges.posts;
+        rowData = [
+          event.data.incoming_tweet?.id || '',                    // tweet_id
+          event.data.text || event.data.content || '',           // content
+          JSON.stringify(event.data.media_urls || []),           // media_urls
+          new Date(event.timestamp).toISOString(),               // timestamp
+          event.data.permanentUrl || '',                         // permanent_url
+          event.data.inReplyToStatusId || '',                    // in_reply_to_id
+          event.data.conversation_id || '',                      // conversation_id
+          event.data.approvalId || '',                          // approval_id
+          this.runtime.character.name,                          // agent_name
+          this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
+          event.data.status || 'sent'                          // status
+        ];
+      } else {
+        range = this.sheetsConfig.ranges.interactions;
+        const tweet = event.data.incoming_tweet || {};
+        rowData = [
+          event.type,                                           // type
+          tweet.id || '',                                       // tweet_id
+          tweet.text || '',                                     // content
+          tweet.username || '',                                 // author_username
+          tweet.name || '',                                     // author_name
+          new Date(event.timestamp).toISOString(),              // timestamp
+          tweet.permanentUrl || '',                             // permanent_url
+          tweet.inReplyToStatusId || '',                        // in_reply_to_id
+          tweet.conversation_id || '',                          // conversation_id
+          event.data.agent_response?.text || '',                // agent_response
+          event.data.agent_response?.tweet_id || '',            // response_tweet_id
+          this.runtime.character.name,                          // agent_name
+          this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
+          JSON.stringify(event.data.context || {})              // context
+        ];
       }
 
-      // Log the outgoing payload
-      elizaLogger.log('Webhook Outgoing Payload:', {
-        url: webhookUrl,
-        type: event.type,
-        timestamp: new Date(event.timestamp).toISOString(),
-        payload: JSON.stringify(event, null, 2)
+      // Check if headers exist, if not add them
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: range.split('!')[0] + '!A1:1'
       });
 
-      // Send to storage webhook
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(event)
-      });
-
-      // Also send to approval webhook if it's a content type that needs approval
-      if (['post', 'reply', 'mention', 'dm'].includes(event.type)) {
-        // Format content and context based on event type
-        let formattedContent = '';
-        let formattedContext = {};
-
-        switch (event.type) {
-          case 'post':
-            formattedContent = event.data.text || event.data.content || '';
-            break;
-          
-          case 'reply':
-            formattedContent = event.data.text || event.data.content || '';
-            formattedContext = {
-              in_reply_to: event.data.in_reply_to,
-              conversation_id: event.data.conversation_id
-            };
-            break;
-          
-          case 'mention':
-            formattedContent = event.data.text || event.data.content || '';
-            formattedContext = {
-              tweet_id: event.data.tweet_id,
-              user: event.data.user
-            };
-            break;
-          
-          case 'dm':
-            formattedContent = event.data.text || event.data.content || '';
-            formattedContext = {
-              conversation_id: event.data.conversation_id,
-              recipient: event.data.recipient
-            };
-            break;
-        }
-
-        // Log the content being sent for approval
-        elizaLogger.log('Sending content for approval:', {
-          type: event.type,
-          content: formattedContent,
-          context: formattedContext
-        });
-
-        await this.queueForApproval(
-          formattedContent,
-          event.type,
-          {
-            ...formattedContext,
-            original_event: event.type,
-            timestamp: event.timestamp
+      if (!response.data.values || response.data.values.length === 0) {
+        // Add headers first
+        await this.sheets.spreadsheets.values.append({
+          spreadsheetId: this.sheetsConfig.spreadsheetId,
+          range,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: {
+            values: [this.sheetsConfig.headers[event.type === 'post' ? 'posts' : 'interactions']]
           }
-        );
+        });
       }
 
-      // Log the response
-      const responseBody = await response.text();
-      elizaLogger.log('Webhook Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: responseBody
+      // Append the data
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [rowData]
+        }
       });
 
-      if (!response.ok) {
-        throw new Error(`Webhook request failed with status ${response.status}: ${responseBody}`);
-      }
+      elizaLogger.log(`Successfully sent ${event.type} event to Google Sheets`);
 
-      elizaLogger.log(`Successfully sent ${event.type} event to webhook: ${webhookUrl}`);
-
-      // Store webhook logs in cache for debugging
+      // Store logs in cache for debugging
       await this.storeWebhookLog({
         timestamp: event.timestamp,
         type: event.type,
-        url: webhookUrl,
-        payload: event,
-        response: {
-          status: response.status,
-          statusText: response.statusText,
-          body: responseBody
-        }
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range,
+        data: rowData
       });
 
     } catch (error) {
-      elizaLogger.error('Error sending webhook notification:', error);
+      elizaLogger.error('Error sending to Google Sheets:', error);
       
-      // Store failed webhook attempt in cache
+      // Store failed attempt in cache
       await this.storeWebhookLog({
         timestamp: event.timestamp,
         type: event.type,
-        url: this.webhookUrls[event.type],
-        payload: event,
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
         error: error.message
       });
     }
@@ -405,5 +469,16 @@ export class WebhookHandler {
     } catch (error) {
       elizaLogger.error('Error storing webhook log:', error);
     }
+  }
+
+  // Check if a specific approval is still pending
+  async isApprovalPending(approvalId) {
+    const cached = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
+    return cached?.status === 'pending';
+  }
+
+  // Get the status and result of an approval
+  async getApprovalStatus(approvalId) {
+    return await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
   }
 } 
