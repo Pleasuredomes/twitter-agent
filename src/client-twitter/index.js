@@ -16,17 +16,11 @@ var twitterPostTemplate = `{{timeline}}
 About {{agentName}} (@{{twitterUserName}}):
 {{bio}}
 {{lore}}
-{{postDirections}}
-
-{{providers}}
-
-{{recentPosts}}
-
-{{characterPostExamples}}
 
 # Task: Generate a post in the voice and style of {{agentName}}, aka @{{twitterUserName}}
-Write a single sentence post that is {{adjective}} about {{topic}} (without mentioning {{topic}} directly), from the perspective of {{agentName}}. Try to write something totally different than previous posts. Do not add commentary or acknowledge this request, just write the post.
-Your response should not contain any questions. Brief, concise statements only. No emojis. Use \\n\\n (double spaces) between statements.`;
+Write a single sentence post from the perspective of {{agentName}}, expressing their personality and views. Try to write something totally different than previous posts. Do not add commentary or acknowledge this request, just write the post.
+
+Your response should be brief and concise. No emojis. Use \\n\\n (double spaces) between statements.`;
 var MAX_TWEET_LENGTH = 280;
 function truncateToCompleteSentence(text) {
   if (text.length <= MAX_TWEET_LENGTH) {
@@ -140,9 +134,6 @@ var TwitterPostClient = class {
             tweet.inReplyToStatusId ? `\nIn reply to: ${tweet.inReplyToStatusId}` : ""
           }\n${new Date(tweet.timestamp).toDateString()}\n\n${tweet.text}\n---\n`;
         }).join("\n");
-
-      const topics = this.runtime.character.topics.join(", ");
-      elizaLogger.log("Generating tweet about topics:", topics);
       
       const state = await this.runtime.composeState(
         {
@@ -150,7 +141,7 @@ var TwitterPostClient = class {
           roomId: stringToUuid("twitter_generate_room"),
           agentId: this.runtime.agentId,
           content: {
-            text: topics,
+            text: "",
             action: ""
           }
         },
@@ -183,7 +174,6 @@ var TwitterPostClient = class {
         'post',
         {
           generated: true,
-          topics,
           timestamp: Date.now()
         }
       );
