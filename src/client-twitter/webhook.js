@@ -290,13 +290,11 @@ export class WebhookHandler {
             reason
         });
 
-        // Get the memory associated with this approval
+        // Get the memory associated with this approval using getMemories with a filter
         elizaLogger.log("🔍 Looking up memory for approval...");
-        const memories = await this.runtime.messageManager.getMemoriesByQuery({
+        const memories = await this.runtime.messageManager.getMemories({
             agentId: this.runtime.agentId,
-            query: {
-                'content.approvalId': approvalId
-            }
+            filter: memory => memory.content?.approvalId === approvalId
         });
 
         if (!memories || memories.length === 0) {
