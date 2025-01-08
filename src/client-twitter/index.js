@@ -110,134 +110,80 @@ var TwitterPostClient = class {
   }
 
   async generateNewTweet() {
-    elizaLogger.log("Generating new tweet");
     try {
-      await this.runtime.ensureUserExists(
-        this.runtime.agentId,
-        this.client.profile.username,
-        this.runtime.character.name,
-        "twitter"
-      );
+      elizaLogger.log("🤖 Starting tweet generation process");
+      
+      // Log OpenAI configuration
+      elizaLogger.log("📝 OpenAI Configuration:", {
+        model: this.runtime.getSetting("OPENAI_MODEL") || "default model",
+        apiKey: this.runtime.getSetting("OPENAI_API_KEY") ? "Set" : "Not Set"
+      });
 
-      let homeTimeline = [];
-      const cachedTimeline = await this.client.getCachedTimeline();
-      if (cachedTimeline) {
-        homeTimeline = cachedTimeline;
-      } else {
-        homeTimeline = await this.client.fetchHomeTimeline(10);
-        await this.client.cacheTimeline(homeTimeline);
+      // Prepare prompt context
+      elizaLogger.log("🎯 Preparing tweet generation prompt");
+      const prompt = await this.prepareTweetPrompt();
+      elizaLogger.log("✅ Prompt prepared, calling OpenAI...");
+
+      // Make OpenAI call
+      elizaLogger.log("🔄 Making OpenAI API call for tweet generation...");
+      const response = await this.runtime.generate({
+        type: "tweet",
+        maxLength: 280,
+        prompt
+      });
+      elizaLogger.log("✅ Received OpenAI response:", {
+        responseLength: response?.length || 0,
+        response: response?.substring(0, 50) + "..." // Log first 50 chars
+      });
+
+      if (!response) {
+        throw new Error("No response received from OpenAI");
       }
 
-      const formattedHomeTimeline = `# ${this.runtime.character.name}'s Home Timeline\n\n` + 
-        homeTimeline.map((tweet) => {
-          return `#${tweet.id}\n${tweet.name} (@${tweet.username})${
-            tweet.inReplyToStatusId ? `\nIn reply to: ${tweet.inReplyToStatusId}` : ""
-          }\n${new Date(tweet.timestamp).toDateString()}\n\n${tweet.text}\n---\n`;
-        }).join("\n");
-      
-      const state = await this.runtime.composeState(
-        {
-          userId: this.runtime.agentId,
-          roomId: stringToUuid("twitter_generate_room"),
-          agentId: this.runtime.agentId,
-          content: {
-            text: "",
-            action: ""
-          }
-        },
-        {
-          twitterUserName: this.client.profile.username,
-          timeline: formattedHomeTimeline
-        }
-      );
-
-      const context = composeContext({
-        state,
-        template: this.runtime.character.templates?.twitterPostTemplate || twitterPostTemplate
+      // Process tweet
+      elizaLogger.log("📝 Processing generated tweet...");
+      const tweet = this.processTweetResponse(response);
+      elizaLogger.log("✅ Tweet processed:", {
+        length: tweet.length,
+        content: tweet
       });
 
-      elizaLogger.debug("Generate post prompt:\n" + context);
-      const newTweetContent = await generateText({
-        runtime: this.runtime,
-        context,
-        modelClass: ModelClass.SMALL
-      });
+      // Queue for approval
+      elizaLogger.log("📤 Queueing tweet for approval...");
+      await this.webhookHandler.queueForApproval(tweet, "post");
+      elizaLogger.log("✅ Tweet queued for approval successfully");
 
-      const formattedTweet = newTweetContent.replaceAll(/\\n/g, "\n").trim();
-      const content = truncateToCompleteSentence(formattedTweet);
-
-      elizaLogger.log("Generated tweet content:", content);
-
-      // Queue for approval instead of sending directly
-      const approvalResult = await this.webhookHandler.queueForApproval(
-        content,
-        'post',
-        {
-          generated: true,
-          timestamp: Date.now()
-        }
-      );
-
-      elizaLogger.log("Tweet queued for approval:", approvalResult);
-
-      // Store in memory
-      const tweetId = Date.now().toString();
-      const roomId = stringToUuid(tweetId + "-" + this.runtime.agentId);
-      await this.runtime.ensureRoomExists(roomId);
-      await this.runtime.ensureParticipantInRoom(
-        this.runtime.agentId,
-        roomId
-      );
-
-      const tweetData = {
-        id: tweetId,
-        text: content,
-        name: this.client.profile.screenName,
-        username: this.client.profile.username,
-        timestamp: Date.now(),
-        permanentUrl: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${tweetId}`,
-        approvalId: approvalResult.approvalId
-      };
-
-      // Send to webhook
-      await this.webhookHandler.sendToWebhook({
-        type: 'post',
-        data: tweetData,
-        timestamp: Date.now()
-      });
-
-      await this.runtime.messageManager.createMemory({
-        id: stringToUuid(tweetId + "-" + this.runtime.agentId),
-        userId: this.runtime.agentId,
-        agentId: this.runtime.agentId,
-        content: {
-          text: content,
-          url: tweetData.permanentUrl,
-          source: "twitter",
-          approvalId: approvalResult.approvalId,
-          status: 'pending_approval'
-        },
-        roomId,
-        embedding: embeddingZeroVector,
-        createdAt: tweetData.timestamp
-      });
-
-      // Cache the tweet data
-      await this.runtime.cacheManager.set(
-        `twitter/${this.client.profile.username}/lastPost`,
-        {
-          id: tweetData.id,
-          timestamp: tweetData.timestamp
-        }
-      );
-
-      elizaLogger.log(`Generated post queued for approval:\n${content}`);
-      return tweetData;
-
+      return tweet;
     } catch (error) {
-      elizaLogger.error("Error generating new tweet:", error);
-      throw error; // Re-throw to trigger retry in the loop
+      elizaLogger.error("❌ Error in tweet generation:", {
+        name: error?.name,
+        message: error?.message,
+        stack: error?.stack
+      });
+      throw error;
     }
+  }
+
+  // Helper method to prepare tweet prompt
+  async prepareTweetPrompt() {
+    elizaLogger.log("🎯 Building tweet prompt context");
+    const context = {
+      agentName: this.runtime.character.name,
+      twitterUserName: this.client.profile.username,
+      bio: this.runtime.character.bio,
+      style: this.runtime.character.style
+    };
+    elizaLogger.log("✅ Tweet context prepared:", context);
+    return context;
+  }
+
+  // Helper method to process tweet response
+  processTweetResponse(response) {
+    elizaLogger.log("🔍 Processing tweet response");
+    // Clean up the response and ensure it meets Twitter requirements
+    const cleaned = response.trim().replace(/^["']|["']$/g, '');
+    elizaLogger.log("✅ Tweet cleaned and processed");
+    return cleaned;
   }
 };
 
