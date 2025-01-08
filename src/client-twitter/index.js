@@ -174,6 +174,15 @@ var TwitterPostClient = class {
       await this.webhookHandler.queueForApproval(tweet, "post");
       elizaLogger.log("✅ Tweet queued for approval successfully");
 
+      // Update last post timestamp in cache
+      await this.runtime.cacheManager.set(
+        `twitter/${this.runtime.getSetting("TWITTER_USERNAME")}/lastPost`,
+        {
+          timestamp: Date.now()
+        }
+      );
+      elizaLogger.log("✅ Updated last post timestamp in cache");
+
       return tweet;
     } catch (error) {
       elizaLogger.error("❌ Error in tweet generation:", {
