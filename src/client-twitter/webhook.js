@@ -348,7 +348,7 @@ export class WebhookHandler {
 
                 while (!postResult && retryCount < maxRetries) {
                     try {
-                        // The Twitter client might be nested in the post client
+                        // Get the Twitter client from the post client
                         const twitterPostClient = this.runtime.clients?.find(client => client.post);
                         if (!twitterPostClient) {
                             throw new Error('Twitter post client not found');
@@ -360,11 +360,19 @@ export class WebhookHandler {
                             clientMethods: Object.keys(twitterPostClient.client || {})
                         });
 
-                        // Use the post method from the TwitterPostClient
-                        postResult = await twitterPostClient.post(
+                        // Use sendTweet from the client's twitterClient
+                        postResult = await twitterPostClient.client.sendTweet(
                             tweetContent,
-                            pendingApproval.payload.content_type === 'post' ? undefined : contextData?.tweet_id
+                            pendingApproval.payload.content_type !== 'post' ? contextData?.tweet_id : undefined
                         );
+
+                        // Extract the tweet ID from the response
+                        if (!postResult.id) {
+                            postResult = {
+                                id: postResult.tweet_id || postResult.data?.id,
+                                conversation_id: postResult.conversation_id || postResult.data?.conversation_id
+                            };
+                        }
                     } catch (postError) {
                         retryCount++;
                         elizaLogger.warn(`⚠️ Failed to post tweet (attempt ${retryCount}/${maxRetries}):`, {
