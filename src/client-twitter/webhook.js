@@ -319,14 +319,16 @@ export class WebhookHandler {
                 const retryDelay = 5000; // 5 seconds
 
                 while (!twitterClient && retryCount < maxRetries) {
-                    twitterClient = this.runtime.clients?.twitter?.client?.twitterClient;
+                    // The client is stored directly in the TwitterPostClient instance
+                    twitterClient = this.runtime.clients?.find(client => client.post)?.client;
                     
                     if (!twitterClient) {
                         retryCount++;
                         elizaLogger.warn(`⚠️ Twitter client not found in runtime (attempt ${retryCount}/${maxRetries}):`, {
                             hasClients: !!this.runtime.clients,
                             clientKeys: Object.keys(this.runtime.clients || {}),
-                            hasTwitter: !!this.runtime.clients?.twitter
+                            clientCount: this.runtime.clients?.length || 0,
+                            clientTypes: this.runtime.clients?.map(c => c.constructor.name) || []
                         });
                         
                         if (retryCount < maxRetries) {
@@ -629,6 +631,17 @@ export class WebhookHandler {
   async checkPendingApprovals() {
     try {
         elizaLogger.log('Checking pending approvals...');
+        
+        // Verify Twitter client access
+        const twitterClient = this.runtime.clients?.find(client => client.post)?.client;
+        if (!twitterClient) {
+            elizaLogger.warn('Twitter client not available, will retry later:', {
+                hasClients: !!this.runtime.clients,
+                clientCount: this.runtime.clients?.length || 0,
+                clientTypes: this.runtime.clients?.map(c => c.constructor.name) || []
+            });
+            return; // Exit early and retry on next check
+        }
         
         // Get all rows from approvals sheet
         const response = await this.sheets.spreadsheets.values.get({
