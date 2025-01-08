@@ -312,38 +312,76 @@ export class WebhookHandler {
             });
 
             try {
-                // Get Twitter client from runtime
-                const twitterClient = this.runtime.clients?.twitter?.client?.twitterClient;
-                
+                // Get Twitter client from runtime with retries
+                let twitterClient = null;
+                let retryCount = 0;
+                const maxRetries = 3;
+                const retryDelay = 5000; // 5 seconds
+
+                while (!twitterClient && retryCount < maxRetries) {
+                    twitterClient = this.runtime.clients?.twitter?.client?.twitterClient;
+                    
+                    if (!twitterClient) {
+                        retryCount++;
+                        elizaLogger.warn(`⚠️ Twitter client not found in runtime (attempt ${retryCount}/${maxRetries}):`, {
+                            hasClients: !!this.runtime.clients,
+                            clientKeys: Object.keys(this.runtime.clients || {}),
+                            hasTwitter: !!this.runtime.clients?.twitter
+                        });
+                        
+                        if (retryCount < maxRetries) {
+                            elizaLogger.log(`Waiting ${retryDelay/1000} seconds before retry...`);
+                            await new Promise(resolve => setTimeout(resolve, retryDelay));
+                        }
+                    }
+                }
+
                 if (!twitterClient) {
-                    elizaLogger.error('❌ Twitter client not found in runtime:', {
-                        hasClients: !!this.runtime.clients,
-                        clientKeys: Object.keys(this.runtime.clients || {}),
-                        hasTwitter: !!this.runtime.clients?.twitter
-                    });
-                    throw new Error('Twitter client not found in runtime');
+                    throw new Error(`Twitter client not found in runtime after ${maxRetries} attempts`);
                 }
 
                 elizaLogger.log("🔄 Making Twitter API call...");
-                const result = await twitterClient.sendTweet(
-                    tweetContent,
-                    // For mentions/replies, use the original tweet_id as reply_to
-                    pendingApproval.payload.content_type === 'post' ? undefined : contextData?.tweet_id
-                );
-                elizaLogger.log("✅ Twitter API response:", result);
+                let postResult = null;
+                retryCount = 0;
+
+                while (!postResult && retryCount < maxRetries) {
+                    try {
+                        postResult = await twitterClient.sendTweet(
+                            tweetContent,
+                            // For mentions/replies, use the original tweet_id as reply_to
+                            pendingApproval.payload.content_type === 'post' ? undefined : contextData?.tweet_id
+                        );
+                    } catch (postError) {
+                        retryCount++;
+                        elizaLogger.warn(`⚠️ Failed to post tweet (attempt ${retryCount}/${maxRetries}):`, {
+                            error: postError.message,
+                            code: postError.code,
+                            response: postError.response?.data
+                        });
+                        
+                        if (retryCount < maxRetries) {
+                            elizaLogger.log(`Waiting ${retryDelay/1000} seconds before retry...`);
+                            await new Promise(resolve => setTimeout(resolve, retryDelay));
+                        } else {
+                            throw postError;
+                        }
+                    }
+                }
+
+                elizaLogger.log("✅ Twitter API response:", postResult);
 
                 // Update Google Sheet with success status
-                await this.updateApprovalStatus(approvalId, 'sent', result.id);
+                await this.updateApprovalStatus(approvalId, 'sent', postResult.id);
 
                 // Handle different content types
                 if (pendingApproval.payload.content_type === 'post') {
                     // Move to posts sheet if it was a post
                     await this.moveToPostsSheet({
-                        id: result.id,
+                        id: postResult.id,
                         text: tweetContent,
-                        permanentUrl: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${result.id}`,
+                        permanentUrl: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${postResult.id}`,
                         inReplyToStatusId: contextData?.inReplyTo,
-                        conversationId: result.conversation_id,
+                        conversationId: postResult.conversation_id,
                         approvalId: approvalId,
                         agent_name: this.runtime.character.name,
                         agent_username: this.runtime.getSetting("TWITTER_USERNAME")
@@ -358,9 +396,9 @@ export class WebhookHandler {
                         author_name: contextData.author_name,
                         permanent_url: contextData.permanent_url,
                         in_reply_to_id: contextData.tweet_id,
-                        conversation_id: result.conversation_id,
+                        conversation_id: postResult.conversation_id,
                         agent_response: tweetContent,
-                        response_tweet_id: result.id,
+                        response_tweet_id: postResult.id,
                         agent_name: this.runtime.character.name,
                         agent_username: this.runtime.getSetting("TWITTER_USERNAME"),
                         context: contextData
@@ -369,7 +407,7 @@ export class WebhookHandler {
 
                 elizaLogger.log('✅ Successfully sent approved content:', {
                     approvalId,
-                    tweetId: result.id,
+                    tweetId: postResult.id,
                     text: tweetContent,
                     type: pendingApproval.payload.content_type
                 });
