@@ -82,6 +82,17 @@ export class WebhookHandler {
       });
 
       this.sheets = google.sheets({ version: 'v4', auth });
+      
+      // Test the connection
+      await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: 'A1'
+      }).catch(error => {
+        elizaLogger.error('Failed to connect to Google Sheets:', error.message);
+        throw new Error('Failed to connect to Google Sheets. Please check your credentials and spreadsheet ID.');
+      });
+
+      elizaLogger.log('Successfully connected to Google Sheets');
     } catch (error) {
       elizaLogger.error('Error initializing Google Sheets:', error);
       throw error;
@@ -338,21 +349,17 @@ export class WebhookHandler {
           }
         });
 
-        // If approved, post to Twitter and update Posts sheet
+        // If approved and successfully posted, update the tweet_id
         if (approved) {
-          const finalContent = modifiedContent || pending?.payload?.content;
-          const context = JSON.parse(pending?.payload?.context || '{}');
-
-          // Emit the approved event for the runtime to handle Twitter posting
           const tweetResult = await this.runtime.emit('content_approved', {
             type: pending?.payload?.content_type,
-            content: finalContent,
-            context: context,
+            content: modifiedContent || pending?.payload?.content,
+            context: pending?.payload?.context,
             approvalId
           });
 
           if (tweetResult?.tweet_id) {
-            // Update the tweet_id in the Approvals sheet
+            // Update the tweet_id in the sheet
             await this.sheets.spreadsheets.values.update({
               spreadsheetId: this.sheetsConfig.spreadsheetId,
               range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!M${rowIndex + 1}`, // Column M is tweet_id
@@ -360,12 +367,6 @@ export class WebhookHandler {
               requestBody: {
                 values: [[tweetResult.tweet_id]]
               }
-            });
-
-            // Add to Posts sheet
-            await this.postToSheet(approvalId, finalContent, {
-              ...context,
-              tweet_id: tweetResult.tweet_id
             });
           }
         }
@@ -394,51 +395,47 @@ export class WebhookHandler {
   // Send data to Google Sheets
   async sendToWebhook(event) {
     try {
-      // For posts, we need to queue for approval first
-      if (event.type === 'post') {
-        const content = event.data.text || event.data.content || '';
-        elizaLogger.log('Queueing post for approval:', content);
-        
-        // Queue for approval first
-        const approvalResult = await this.queueForApproval(
-          content,
-          'post',
-          {
-            media_urls: event.data.media_urls || [],
-            permanent_url: event.data.permanentUrl || '',
-            in_reply_to_id: event.data.inReplyToStatusId || '',
-            conversation_id: event.data.conversation_id || ''
-          }
-        );
+      // Determine which sheet to use based on event type
+      let range;
+      let rowData;
 
-        // Store approval ID for later reference
-        event.data.approvalId = approvalResult.approvalId;
-        
-        elizaLogger.log('Post queued for approval with ID:', approvalResult.approvalId);
-        return;
+      if (event.type === 'post') {
+        range = this.sheetsConfig.ranges.posts;
+        rowData = [
+          event.data.incoming_tweet?.id || '',                    // tweet_id
+          event.data.text || event.data.content || '',           // content
+          JSON.stringify(event.data.media_urls || []),           // media_urls
+          new Date(event.timestamp).toISOString(),               // timestamp
+          event.data.permanentUrl || '',                         // permanent_url
+          event.data.inReplyToStatusId || '',                    // in_reply_to_id
+          event.data.conversation_id || '',                      // conversation_id
+          event.data.approvalId || '',                          // approval_id
+          this.runtime.character.name,                          // agent_name
+          this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
+          event.data.status || 'sent'                          // status
+        ];
+      } else {
+        range = this.sheetsConfig.ranges.interactions;
+        const tweet = event.data.incoming_tweet || {};
+        rowData = [
+          event.type,                                           // type
+          tweet.id || '',                                       // tweet_id
+          tweet.text || '',                                     // content
+          tweet.username || '',                                 // author_username
+          tweet.name || '',                                     // author_name
+          new Date(event.timestamp).toISOString(),              // timestamp
+          tweet.permanentUrl || '',                             // permanent_url
+          tweet.inReplyToStatusId || '',                        // in_reply_to_id
+          tweet.conversation_id || '',                          // conversation_id
+          event.data.agent_response?.text || '',                // agent_response
+          event.data.agent_response?.tweet_id || '',            // response_tweet_id
+          this.runtime.character.name,                          // agent_name
+          this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
+          JSON.stringify(event.data.context || {})              // context
+        ];
       }
 
-      // For other types of events (interactions), proceed as normal
-      let range = this.sheetsConfig.ranges.interactions;
-      const tweet = event.data.incoming_tweet || {};
-      const rowData = [
-        event.type,                                           // type
-        tweet.id || '',                                       // tweet_id
-        tweet.text || '',                                     // content
-        tweet.username || '',                                 // author_username
-        tweet.name || '',                                     // author_name
-        new Date(event.timestamp).toISOString(),              // timestamp
-        tweet.permanentUrl || '',                             // permanent_url
-        tweet.inReplyToStatusId || '',                        // in_reply_to_id
-        tweet.conversation_id || '',                          // conversation_id
-        event.data.agent_response?.text || '',                // agent_response
-        event.data.agent_response?.tweet_id || '',            // response_tweet_id
-        this.runtime.character.name,                          // agent_name
-        this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
-        JSON.stringify(event.data.context || {})              // context
-      ];
-
-      // Append interaction data
+      // Append the data directly without checking headers (they should be set up already)
       await this.sheets.spreadsheets.values.append({
         spreadsheetId: this.sheetsConfig.spreadsheetId,
         range,
@@ -463,40 +460,6 @@ export class WebhookHandler {
 
     } catch (error) {
       elizaLogger.error('Error sending to Google Sheets:', error);
-      throw error;
-    }
-  }
-
-  // Add a new method to handle posting approved content
-  async postToSheet(approvalId, content, context = {}) {
-    try {
-      const rowData = [
-        context.tweet_id || '',                              // tweet_id
-        content,                                             // content
-        JSON.stringify(context.media_urls || []),            // media_urls
-        new Date().toISOString(),                           // timestamp
-        context.permanent_url || '',                         // permanent_url
-        context.in_reply_to_id || '',                       // in_reply_to_id
-        context.conversation_id || '',                       // conversation_id
-        approvalId,                                         // approval_id
-        this.runtime.character.name,                        // agent_name
-        this.runtime.getSetting("TWITTER_USERNAME"),        // agent_username
-        'approved'                                          // status
-      ];
-
-      await this.sheets.spreadsheets.values.append({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: this.sheetsConfig.ranges.posts,
-        valueInputOption: 'RAW',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: {
-          values: [rowData]
-        }
-      });
-
-      elizaLogger.log('Successfully posted approved content to Posts sheet');
-    } catch (error) {
-      elizaLogger.error('Error posting to Posts sheet:', error);
       throw error;
     }
   }

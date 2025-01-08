@@ -1246,6 +1246,8 @@ var ClientBase = class _ClientBase extends EventEmitter {
     if (!username) {
       throw new Error("Twitter username not configured");
     }
+
+    // Try to use cached cookies first
     if (this.runtime.getSetting("TWITTER_COOKIES")) {
       const cookiesArray = JSON.parse(
         this.runtime.getSetting("TWITTER_COOKIES")
@@ -1257,39 +1259,54 @@ var ClientBase = class _ClientBase extends EventEmitter {
         await this.setCookiesFromArray(cachedCookies);
       }
     }
-    elizaLogger4.log("Waiting for Twitter login");
-    while (true) {
-      await this.twitterClient.login(
-        username,
-        this.runtime.getSetting("TWITTER_PASSWORD"),
-        this.runtime.getSetting("TWITTER_EMAIL"),
-        this.runtime.getSetting("TWITTER_2FA_SECRET")
-      );
-      if (await this.twitterClient.isLoggedIn()) {
-        const cookies = await this.twitterClient.getCookies();
-        await this.cacheCookies(username, cookies);
-        break;
+
+    // Try to login with max retries
+    elizaLogger.log("Attempting Twitter login...");
+    let retries = 0;
+    const maxRetries = 3;
+    
+    while (retries < maxRetries) {
+      try {
+        await this.twitterClient.login(
+          username,
+          this.runtime.getSetting("TWITTER_PASSWORD"),
+          this.runtime.getSetting("TWITTER_EMAIL"),
+          this.runtime.getSetting("TWITTER_2FA_SECRET")
+        );
+        
+        if (await this.twitterClient.isLoggedIn()) {
+          const cookies = await this.twitterClient.getCookies();
+          await this.cacheCookies(username, cookies);
+          break;
+        }
+      } catch (error) {
+        elizaLogger.error(`Login attempt ${retries + 1} failed:`, error);
+        retries++;
+        if (retries === maxRetries) {
+          throw new Error('Failed to login to Twitter after maximum retries');
+        }
+        // Wait before next retry
+        await new Promise(resolve => setTimeout(resolve, 5000));
       }
-      elizaLogger4.error("Failed to login to Twitter trying again...");
-      await new Promise((resolve) => setTimeout(resolve, 2e3));
     }
+
+    // Load profile after successful login
     this.profile = await this.fetchProfile(username);
-    if (this.profile) {
-      elizaLogger4.log("Twitter user ID:", this.profile.id);
-      elizaLogger4.log(
-        "Twitter loaded:",
-        JSON.stringify(this.profile, null, 10)
-      );
-      this.runtime.character.twitterProfile = {
-        id: this.profile.id,
-        username: this.profile.username,
-        screenName: this.profile.screenName,
-        bio: this.profile.bio,
-        nicknames: this.profile.nicknames
-      };
-    } else {
-      throw new Error("Failed to load profile");
+    if (!this.profile) {
+      throw new Error("Failed to load Twitter profile");
     }
+
+    elizaLogger.log("Twitter user ID:", this.profile.id);
+    elizaLogger.log("Twitter loaded:", JSON.stringify(this.profile, null, 2));
+    
+    this.runtime.character.twitterProfile = {
+      id: this.profile.id,
+      username: this.profile.username,
+      screenName: this.profile.screenName,
+      bio: this.profile.bio,
+      nicknames: this.profile.nicknames
+    };
+
     await this.loadLatestCheckedTweetId();
     await this.populateTimeline();
   }
