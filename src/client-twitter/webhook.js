@@ -360,10 +360,26 @@ export class WebhookHandler {
                         });
 
                         // Use sendTweet method that was working previously
-                        postResult = await twitterClient.sendTweet(
-                            tweetContent,
-                            pendingApproval.payload.context?.inReplyTo
-                        );
+                        if (pendingApproval.payload.content_type === 'mention') {
+                            // For mentions, reply to the original tweet
+                            const replyToId = contextData?.tweet_id;
+                            elizaLogger.log("📝 Replying to tweet:", {
+                                replyToId,
+                                content: tweetContent
+                            });
+                            postResult = await twitterClient.sendTweet(
+                                tweetContent,
+                                replyToId
+                            );
+                        } else {
+                            // For posts, post directly to user's account
+                            elizaLogger.log("📝 Posting new tweet:", {
+                                content: tweetContent
+                            });
+                            postResult = await twitterClient.sendTweet(
+                                tweetContent
+                            );
+                        }
 
                         // Extract the tweet ID from the response if needed
                         if (!postResult.id) {
