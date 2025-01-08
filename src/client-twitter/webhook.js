@@ -348,9 +348,21 @@ export class WebhookHandler {
 
                 while (!postResult && retryCount < maxRetries) {
                     try {
-                        postResult = await twitterClient.sendTweet(
+                        // The Twitter client might be nested in the post client
+                        const twitterPostClient = this.runtime.clients?.find(client => client.post);
+                        if (!twitterPostClient) {
+                            throw new Error('Twitter post client not found');
+                        }
+
+                        elizaLogger.log("📝 Twitter client structure:", {
+                            hasPost: !!twitterPostClient.post,
+                            hasClient: !!twitterPostClient.client,
+                            clientMethods: Object.keys(twitterPostClient.client || {})
+                        });
+
+                        // Use the post method from the TwitterPostClient
+                        postResult = await twitterPostClient.post(
                             tweetContent,
-                            // For mentions/replies, use the original tweet_id as reply_to
                             pendingApproval.payload.content_type === 'post' ? undefined : contextData?.tweet_id
                         );
                     } catch (postError) {
