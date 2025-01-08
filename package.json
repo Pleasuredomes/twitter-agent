@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsup --format esm --dts",
-    "start": "tsc && node --loader ts-node/esm src/index.ts",
+    "start": "tsc && node --max-old-space-size=8192 --loader ts-node/esm src/index.ts",
     "start:service:all": "pm2 start pnpm --name=\"all\" --restart-delay=3000 --max-restarts=10 -- run start:all",
     "stop:service:all": "pm2 stop all",
-    "auto": "NODE_NO_WARNINGS=1 node --experimental-specifier-resolution=node --loader ts-node/esm src/auto.ts",
+    "auto": "NODE_NO_WARNINGS=1 node --max-old-space-size=8192 --experimental-specifier-resolution=node --loader ts-node/esm src/auto.ts",
     "rebuild": "npm rebuild better-sqlite3 --build-from-source",
     "playwright:install": "playwright install chromium --with-deps",
     "render:build": "pnpm install && pnpm playwright:install",
