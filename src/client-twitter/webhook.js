@@ -312,10 +312,15 @@ export class WebhookHandler {
             });
 
             try {
-                // Get Twitter client from runtime's clients
-                const twitterClient = this.runtime.clients?.find(client => client.post)?.client?.twitterClient;
+                // Get Twitter client from runtime
+                const twitterClient = this.runtime.clients?.twitter?.client?.twitterClient;
                 
                 if (!twitterClient) {
+                    elizaLogger.error('❌ Twitter client not found in runtime:', {
+                        hasClients: !!this.runtime.clients,
+                        clientKeys: Object.keys(this.runtime.clients || {}),
+                        hasTwitter: !!this.runtime.clients?.twitter
+                    });
                     throw new Error('Twitter client not found in runtime');
                 }
 
@@ -389,9 +394,10 @@ export class WebhookHandler {
                         type: pendingApproval.payload.content_type,
                         context: contextData
                     },
-                    client: {
-                        found: !!this.runtime.clients?.find(client => client.post),
-                        hasTwitterClient: !!this.runtime.clients?.find(client => client.post)?.client?.twitterClient
+                    runtime: {
+                        hasClients: !!this.runtime.clients,
+                        clientKeys: Object.keys(this.runtime.clients || {}),
+                        hasTwitter: !!this.runtime.clients?.twitter
                     }
                 });
 
