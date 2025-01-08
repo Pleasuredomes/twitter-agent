@@ -989,20 +989,23 @@ var ClientBase = class _ClientBase extends EventEmitter {
     }
 
     // Try to use cached cookies first
+    elizaLogger.log("🔄 Checking for cached cookies...");
     if (this.runtime.getSetting("TWITTER_COOKIES")) {
       const cookiesArray = JSON.parse(
         this.runtime.getSetting("TWITTER_COOKIES")
       );
       await this.setCookiesFromArray(cookiesArray);
+      elizaLogger.log("✅ Using provided cookies");
     } else {
       const cachedCookies = await this.getCachedCookies(username);
       if (cachedCookies) {
         await this.setCookiesFromArray(cachedCookies);
+        elizaLogger.log("✅ Using cached cookies");
       }
     }
 
     // Try to login with max retries
-    elizaLogger.log("Attempting Twitter login...");
+    elizaLogger.log("🔄 Attempting Twitter login...");
     let retries = 0;
     const maxRetries = 3;
     
@@ -1018,10 +1021,11 @@ var ClientBase = class _ClientBase extends EventEmitter {
         if (await this.twitterClient.isLoggedIn()) {
           const cookies = await this.twitterClient.getCookies();
           await this.cacheCookies(username, cookies);
+          elizaLogger.log("✅ Twitter login successful");
           break;
         }
       } catch (error) {
-        elizaLogger.error(`Login attempt ${retries + 1} failed:`, error);
+        elizaLogger.error(`❌ Login attempt ${retries + 1} failed:`, error);
         retries++;
         if (retries === maxRetries) {
           throw new Error('Failed to login to Twitter after maximum retries');
@@ -1032,13 +1036,17 @@ var ClientBase = class _ClientBase extends EventEmitter {
     }
 
     // Load profile after successful login
+    elizaLogger.log("🔄 Loading Twitter profile...");
     this.profile = await this.fetchProfile(username);
     if (!this.profile) {
       throw new Error("Failed to load Twitter profile");
     }
 
-    elizaLogger.log("Twitter user ID:", this.profile.id);
-    elizaLogger.log("Twitter loaded:", JSON.stringify(this.profile, null, 2));
+    elizaLogger.log("✅ Twitter profile loaded:", {
+      id: this.profile.id,
+      username: this.profile.username,
+      screenName: this.profile.screenName
+    });
     
     this.runtime.character.twitterProfile = {
       id: this.profile.id,
@@ -1048,8 +1056,15 @@ var ClientBase = class _ClientBase extends EventEmitter {
       nicknames: this.profile.nicknames
     };
 
+    elizaLogger.log("🔄 Loading last checked tweet ID...");
     await this.loadLatestCheckedTweetId();
+    elizaLogger.log("✅ Last checked tweet ID loaded:", this.lastCheckedTweetId || "No previous tweets");
+
+    elizaLogger.log("🔄 Populating timeline...");
     await this.populateTimeline();
+    elizaLogger.log("✅ Timeline populated");
+
+    elizaLogger.log("✅ Twitter client initialization complete");
   }
   async fetchHomeTimeline(count) {
     elizaLogger4.debug("fetching home timeline");
@@ -1408,58 +1423,64 @@ var TwitterClientInterface = {
   async start(runtime) {
     try {
       // Step 1: Validate configuration and setup
-      elizaLogger5.log("Starting Twitter client initialization...");
+      elizaLogger5.log("🚀 Starting Twitter client initialization...");
       await validateTwitterConfig(runtime);
-      elizaLogger5.log("Twitter configuration validated");
+      elizaLogger5.log("✅ Twitter configuration validated");
 
       // Step 2: Create manager and initialize components
       const manager = new TwitterManager(runtime);
-      elizaLogger5.log("Twitter manager created");
+      elizaLogger5.log("✅ Twitter manager created");
 
       // Step 3: Initialize base client (handles Twitter connection)
+      elizaLogger5.log("🔄 Initializing Twitter client...");
       await manager.client.init();
-      elizaLogger5.log("Twitter client initialized and logged in");
+      elizaLogger5.log("✅ Twitter client initialized and logged in");
 
       // Step 4: Initialize webhook handler
+      elizaLogger5.log("🔄 Initializing Google Sheets connection...");
       await manager.post.webhookHandler.initGoogleSheets();
-      elizaLogger5.log("Google Sheets connection initialized");
+      elizaLogger5.log("✅ Google Sheets connection initialized");
 
       // Step 5: Start interaction monitoring
-      elizaLogger5.log("Starting interaction monitoring service...");
+      elizaLogger5.log("🔄 Starting interaction monitoring service...");
       await manager.interaction.start();
-      elizaLogger5.log("Interaction monitoring service started");
+      elizaLogger5.log("✅ Interaction monitoring service started");
 
       // Step 6: Start post generation with immediate first post
-      elizaLogger5.log("Starting tweet generation service...");
+      elizaLogger5.log("🔄 Starting tweet generation service...");
       await manager.post.start(true); // true = generate first tweet immediately
-      elizaLogger5.log("Tweet generation service started");
+      elizaLogger5.log("✅ Tweet generation service started");
 
       // Step 7: Start periodic cleanup
+      elizaLogger5.log("⏰ Setting up periodic tasks...");
       const cleanupInterval = 30 * 60 * 1000; // 30 minutes
       setInterval(() => {
+        elizaLogger5.log("🧹 Running periodic cleanup...");
         manager.post.webhookHandler.cleanup()
-          .catch(err => elizaLogger5.error("Error in cleanup:", err));
+          .catch(err => elizaLogger5.error("❌ Error in cleanup:", err));
       }, cleanupInterval);
-      elizaLogger5.log("Periodic cleanup scheduled");
+      elizaLogger5.log("✅ Periodic cleanup scheduled");
 
       // Step 8: Set up status checking interval for approvals
       const checkInterval = 5 * 60 * 1000; // 5 minutes
       setInterval(() => {
+        elizaLogger5.log("🔍 Checking pending approvals...");
         manager.post.webhookHandler.checkPendingApprovals()
-          .catch(err => elizaLogger5.error("Error checking approvals:", err));
+          .catch(err => elizaLogger5.error("❌ Error checking approvals:", err));
       }, checkInterval);
-      elizaLogger5.log("Approval checking scheduled");
+      elizaLogger5.log("✅ Approval checking scheduled");
 
       // Step 9: Start immediate approval check
+      elizaLogger5.log("🔄 Running initial approval check...");
       await manager.post.webhookHandler.checkPendingApprovals()
-        .catch(err => elizaLogger5.error("Error in initial approval check:", err));
-      elizaLogger5.log("Initial approval check completed");
+        .catch(err => elizaLogger5.error("❌ Error in initial approval check:", err));
+      elizaLogger5.log("✅ Initial approval check completed");
 
-      elizaLogger5.log("Twitter client fully initialized and running");
+      elizaLogger5.log("✨ Twitter client fully initialized and running");
       return manager;
 
     } catch (error) {
-      elizaLogger5.error("Failed to start Twitter client:", error);
+      elizaLogger5.error("❌ Failed to start Twitter client:", error);
       throw error;
     }
   },
