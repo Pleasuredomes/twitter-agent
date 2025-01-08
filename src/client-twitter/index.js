@@ -609,25 +609,72 @@ var TwitterInteractionClient = class {
         if (!this.client.lastCheckedTweetId || parseInt(tweet.id) > parseInt(this.client.lastCheckedTweetId)) {
           elizaLogger.log("Processing new tweet:", tweet.id);
 
+          // Build conversation thread for context
+          const thread = await this.buildConversationThread(tweet);
+
+          // Generate agent's response
+          const state = await this.runtime.composeState(
+            {
+              userId: stringToUuid("twitter_user_" + tweet.userId),
+              roomId: stringToUuid("twitter_room_" + tweet.conversationId),
+              agentId: this.runtime.agentId,
+              content: {
+                text: tweet.text,
+                source: "twitter",
+                url: tweet.permanentUrl
+              }
+            },
+            {
+              twitterUserName: this.client.profile.username,
+              currentPost: tweet.text,
+              formattedConversation: thread.map(t => 
+                `@${t.username}: ${t.text}`
+              ).join('\n\n')
+            }
+          );
+
+          const context = composeContext({
+            state,
+            template: twitterMessageHandlerTemplate
+          });
+
+          elizaLogger.log("Generating response to tweet:", tweet.id);
+          const response = await generateText({
+            runtime: this.runtime,
+            context,
+            modelClass: ModelClass.SMALL
+          });
+
+          if (!response) {
+            elizaLogger.error("No response generated for tweet:", tweet.id);
+            continue;
+          }
+
           // Determine the event type
           let eventType = 'mention';
           if (tweet.referenced_tweets?.some(ref => ref.type === 'replied_to')) {
             eventType = 'reply';
           }
 
-          // Queue for approval
+          // Queue the generated response for approval
           const approvalResult = await this.webhookHandler.queueForApproval(
-            tweet.text,
+            response.trim(),
             eventType,
             {
               tweet_id: tweet.id,
               author_username: tweet.username,
               author_name: tweet.name,
-              found_at: new Date().toISOString()
+              content: tweet.text,
+              found_at: new Date().toISOString(),
+              permanent_url: tweet.permanentUrl
             }
           );
 
-          elizaLogger.log(`Queued ${eventType} for approval:`, approvalResult);
+          elizaLogger.log(`Queued ${eventType} response for approval:`, {
+            originalTweet: tweet.text,
+            response: response.trim(),
+            approvalId: approvalResult.approvalId
+          });
 
           // Send to webhook for tracking
           await this.webhookHandler.sendToWebhook({
@@ -642,10 +689,13 @@ var TwitterInteractionClient = class {
                 timestamp: tweet.timestamp,
                 inReplyToStatusId: tweet.inReplyToStatusId
               },
+              agent_response: {
+                text: response.trim(),
+                approvalId: approvalResult.approvalId
+              },
               context: {
                 foundAt: new Date().toISOString(),
-                searchQuery: `@${twitterUsername}`,
-                approvalId: approvalResult.approvalId
+                searchQuery: `@${twitterUsername}`
               }
             },
             timestamp: Date.now()
