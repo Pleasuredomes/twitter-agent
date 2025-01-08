@@ -290,39 +290,24 @@ export class WebhookHandler {
             reason
         });
 
-        // Get all memories from all rooms and filter for the approval ID
+        // Get the memory associated with this approval from cache
         elizaLogger.log("🔍 Looking up memory for approval...");
-        const allMemories = [];
-        const rooms = await this.runtime.messageManager.getRooms();
+        const pendingApproval = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
         
-        for (const room of rooms) {
-            const roomMemories = await this.runtime.messageManager.getMemories({
-                agentId: this.runtime.agentId,
-                roomId: room.id,
-                filter: memory => memory.content?.approvalId === approvalId
-            });
-            allMemories.push(...roomMemories);
-        }
-
-        if (!allMemories || allMemories.length === 0) {
-            elizaLogger.error('❌ No memory found for approval:', approvalId);
+        if (!pendingApproval) {
+            elizaLogger.error('❌ No pending approval found in cache:', approvalId);
             return;
         }
 
-        const memory = allMemories[0];
-        elizaLogger.log("✅ Found memory:", {
-            id: memory.id,
-            content: memory.content,
-            roomId: memory.roomId
-        });
+        elizaLogger.log("✅ Found pending approval:", pendingApproval);
 
         if (approved) {
             // Send the approved tweet to Twitter
-            const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || memory.content.text;
+            const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || pendingApproval.payload.content;
             
             elizaLogger.log("📝 Preparing to post tweet:", {
                 content: tweetContent,
-                inReplyTo: memory.content.inReplyTo,
+                context: pendingApproval.payload.context,
                 length: tweetContent.length
             });
 
@@ -337,30 +322,37 @@ export class WebhookHandler {
                 elizaLogger.log("🔄 Making Twitter API call...");
                 const result = await twitterClient.sendTweet(
                     tweetContent,
-                    memory.content.inReplyTo
+                    pendingApproval.payload.context?.inReplyTo
                 );
                 elizaLogger.log("✅ Twitter API response:", result);
 
-                // Update memory with sent status and Twitter response
-                elizaLogger.log("💾 Updating memory with success status...");
-                await this.runtime.messageManager.updateMemory({
-                    ...memory,
-                    content: {
-                        ...memory.content,
-                        status: 'sent',
-                        twitterResponse: result,
-                        modifiedText: tweetContent !== memory.content.text ? tweetContent : undefined
-                    }
-                });
-
                 // Update Google Sheet with success status
                 await this.updateApprovalStatus(approvalId, 'sent', result.id);
+
+                // Move to posts sheet if it was a post
+                if (pendingApproval.payload.content_type === 'post') {
+                    await this.moveToPostsSheet({
+                        id: result.id,
+                        text: tweetContent,
+                        permanentUrl: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${result.id}`,
+                        inReplyToStatusId: pendingApproval.payload.context?.inReplyTo,
+                        conversationId: result.conversation_id,
+                        approvalId: approvalId,
+                        agent_name: this.runtime.character.name,
+                        agent_username: this.runtime.getSetting("TWITTER_USERNAME")
+                    });
+                }
 
                 elizaLogger.log('✅ Successfully sent approved tweet:', {
                     approvalId,
                     tweetId: result.id,
                     text: tweetContent
                 });
+
+                // Remove from pending approvals
+                this.pendingApprovals.delete(approvalId);
+                await this.runtime.cacheManager.delete(`pending_approvals/${approvalId}`);
+
             } catch (error) {
                 elizaLogger.error('❌ Error sending tweet to Twitter:', {
                     error: {
@@ -374,26 +366,11 @@ export class WebhookHandler {
                     tweet: {
                         content: tweetContent,
                         length: tweetContent.length,
-                        inReplyTo: memory.content.inReplyTo
+                        context: pendingApproval.payload.context
                     },
                     client: {
                         found: !!this.runtime.clients?.find(client => client.post),
                         hasTwitterClient: !!this.runtime.clients?.find(client => client.post)?.client?.twitterClient
-                    }
-                });
-                
-                // Update memory with error status
-                elizaLogger.log("💾 Updating memory with error status...");
-                await this.runtime.messageManager.updateMemory({
-                    ...memory,
-                    content: {
-                        ...memory.content,
-                        status: 'error',
-                        error: {
-                            message: error.message,
-                            code: error.code,
-                            response: error.response?.data
-                        }
                     }
                 });
 
@@ -403,19 +380,12 @@ export class WebhookHandler {
                 throw error;
             }
         } else {
-            // Update memory with rejected status
-            elizaLogger.log("💾 Updating memory with rejected status...");
-            await this.runtime.messageManager.updateMemory({
-                ...memory,
-                content: {
-                    ...memory.content,
-                    status: 'rejected',
-                    reason
-                }
-            });
-
             // Update Google Sheet with rejected status
             await this.updateApprovalStatus(approvalId, 'rejected', '', reason);
+
+            // Remove from pending approvals
+            this.pendingApprovals.delete(approvalId);
+            await this.runtime.cacheManager.delete(`pending_approvals/${approvalId}`);
 
             elizaLogger.log('ℹ️ Tweet rejected:', {
                 approvalId,
