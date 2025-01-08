@@ -290,19 +290,26 @@ export class WebhookHandler {
             reason
         });
 
-        // Get the memory associated with this approval using getMemories with a filter
+        // Get all memories from all rooms and filter for the approval ID
         elizaLogger.log("🔍 Looking up memory for approval...");
-        const memories = await this.runtime.messageManager.getMemories({
-            agentId: this.runtime.agentId,
-            filter: memory => memory.content?.approvalId === approvalId
-        });
+        const allMemories = [];
+        const rooms = await this.runtime.messageManager.getRooms();
+        
+        for (const room of rooms) {
+            const roomMemories = await this.runtime.messageManager.getMemories({
+                agentId: this.runtime.agentId,
+                roomId: room.id,
+                filter: memory => memory.content?.approvalId === approvalId
+            });
+            allMemories.push(...roomMemories);
+        }
 
-        if (!memories || memories.length === 0) {
+        if (!allMemories || allMemories.length === 0) {
             elizaLogger.error('❌ No memory found for approval:', approvalId);
             return;
         }
 
-        const memory = memories[0];
+        const memory = allMemories[0];
         elizaLogger.log("✅ Found memory:", {
             id: memory.id,
             content: memory.content,
