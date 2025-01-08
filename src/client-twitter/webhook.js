@@ -756,94 +756,278 @@ export class WebhookHandler {
 
   async checkPendingApprovals() {
     try {
-        elizaLogger.log('Checking pending approvals...');
-        
-        // Verify Twitter client access
-        const twitterClient = this.runtime.clients?.find(client => client.post)?.client;
-        if (!twitterClient) {
-            elizaLogger.warn('Twitter client not available, will retry later:', {
-                hasClients: !!this.runtime.clients,
-                clientCount: this.runtime.clients?.length || 0,
-                clientTypes: this.runtime.clients?.map(c => c.constructor.name) || []
-            });
-            return; // Exit early and retry on next check
-        }
-        
-        // Get all rows from approvals sheet
-        const response = await this.sheets.spreadsheets.values.get({
-            spreadsheetId: this.sheetsConfig.spreadsheetId,
-            range: this.sheetsConfig.ranges.approvals
-        });
+      elizaLogger.log('Checking pending approvals...');
+      
+      // Verify Twitter client access
+      const twitterClient = this.runtime.clients?.find(client => client.post)?.client;
+      if (!twitterClient) {
+        elizaLogger.warn('Twitter client not available, will retry later');
+        return;
+      }
+      
+      // Get all rows from approvals sheet
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals
+      });
 
-        if (!response.data.values || response.data.values.length < 2) {
-            elizaLogger.log('No approvals to check');
-            return;
-        }
+      if (!response.data.values || response.data.values.length < 2) {
+        elizaLogger.log('No approvals to check');
+        return;
+      }
 
-        const headers = response.data.values[0];
-        const approvalIdIndex = headers.indexOf('approval_id');
-        const statusIndex = headers.indexOf('status');
-        const contentIndex = headers.indexOf('content');
-        const modifiedContentIndex = headers.indexOf('modified_content');
-        const reasonIndex = headers.indexOf('reason');
-        const timestampIndex = headers.indexOf('timestamp');
-        const contentTypeIndex = headers.indexOf('content_type');
-        const contextIndex = headers.indexOf('context');
+      const headers = response.data.values[0];
+      const approvalIdIndex = headers.indexOf('approval_id');
+      const statusIndex = headers.indexOf('status');
+      const contentIndex = headers.indexOf('content');
+      const modifiedContentIndex = headers.indexOf('modified_content');
+      const reasonIndex = headers.indexOf('reason');
 
-        // Process each row
-        for (const row of response.data.values.slice(1)) {
-            const approvalId = row[approvalIdIndex];
-            const status = (row[statusIndex] || '').toLowerCase();
-            const timestamp = new Date(row[timestampIndex]).getTime();
-            const contentType = row[contentTypeIndex];
-            const context = row[contextIndex] ? JSON.parse(row[contextIndex]) : {};
+      // Collect all pending approvals
+      const pendingApprovals = response.data.values.slice(1)
+        .filter(row => row[statusIndex]?.toLowerCase() === 'pending')
+        .map(row => ({
+          approvalId: row[approvalIdIndex],
+          content: row[contentIndex],
+          modifiedContent: row[modifiedContentIndex],
+          reason: row[reasonIndex]
+        }));
 
-            // Skip if not pending and not recently approved/rejected
-            if (status !== 'approved' && status !== 'rejected') {
-                continue;
-            }
+      if (pendingApprovals.length === 0) {
+        elizaLogger.log('No pending approvals found');
+        return;
+      }
 
-            elizaLogger.log(`Processing ${status} approval ${approvalId}`, {
-                approvalId,
-                status,
-                contentType,
-                hasContext: !!context
-            });
+      elizaLogger.log(`Found ${pendingApprovals.length} pending approvals`);
 
-            // Check if we have this approval in cache
-            const cachedApproval = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
-            if (!cachedApproval) {
-                elizaLogger.log(`Creating cache entry for approval ${approvalId}`);
-                // Create a cache entry for this approval
-                await this.runtime.cacheManager.set(`pending_approvals/${approvalId}`, {
-                    payload: {
-                        approval_id: approvalId,
-                        content_type: contentType,
-                        content: row[contentIndex],
-                        context: context,
-                        agent_name: this.runtime.character.name,
-                        agent_username: this.runtime.getSetting("TWITTER_USERNAME")
-                    },
-                    status: 'pending',
-                    timestamp: timestamp
+      // Process approvals in batches of 10
+      const batchSize = 10;
+      for (let i = 0; i < pendingApprovals.length; i += batchSize) {
+        const batch = pendingApprovals.slice(i, i + batchSize);
+        const updates = [];
+        const postsToMove = [];
+        const interactionsToMove = [];
+
+        for (const approval of batch) {
+          try {
+            const pendingApproval = await this.runtime.cacheManager.get(`pending_approvals/${approval.approvalId}`);
+            if (!pendingApproval) continue;
+
+            // Process the approval
+            const result = await this.processApproval(pendingApproval, approval.modifiedContent);
+            
+            if (result) {
+              updates.push({
+                approvalId: approval.approvalId,
+                status: 'sent',
+                tweetId: result.id,
+                reason: ''
+              });
+
+              // Add to appropriate move batch
+              if (pendingApproval.payload.content_type === 'post') {
+                postsToMove.push({
+                  id: result.id,
+                  text: approval.modifiedContent || approval.content,
+                  permanentUrl: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${result.id}`,
+                  conversationId: result.conversation_id,
+                  approvalId: approval.approvalId,
+                  agent_name: this.runtime.character.name,
+                  agent_username: this.runtime.getSetting("TWITTER_USERNAME")
                 });
+              } else {
+                const contextData = typeof pendingApproval.payload.context === 'string' ? 
+                  JSON.parse(pendingApproval.payload.context) : 
+                  pendingApproval.payload.context;
+
+                interactionsToMove.push({
+                  type: pendingApproval.payload.content_type,
+                  tweet_id: contextData.tweet_id,
+                  content: contextData.content,
+                  author_username: contextData.author_username,
+                  author_name: contextData.author_name,
+                  permanent_url: contextData.permanent_url,
+                  in_reply_to_id: contextData.tweet_id,
+                  conversation_id: result.conversation_id,
+                  agent_response: approval.modifiedContent || approval.content,
+                  response_tweet_id: result.id,
+                  agent_name: this.runtime.character.name,
+                  agent_username: this.runtime.getSetting("TWITTER_USERNAME"),
+                  context: contextData
+                });
+              }
             }
-
-            // Process the approval/rejection
-            await this.handleApprovalResponse(
-                approvalId,
-                status === 'approved',
-                row[modifiedContentIndex] || row[contentIndex],
-                row[reasonIndex]
-            );
-
-            elizaLogger.log(`Processed ${status} for approval ${approvalId}`);
+          } catch (error) {
+            elizaLogger.error(`Error processing approval ${approval.approvalId}:`, error);
+            updates.push({
+              approvalId: approval.approvalId,
+              status: 'error',
+              reason: error.message
+            });
+          }
         }
 
-        elizaLogger.log('Finished checking pending approvals');
+        // Perform batch updates
+        if (updates.length > 0) {
+          await this.batchUpdateApprovals(updates);
+        }
+        if (postsToMove.length > 0) {
+          await this.batchMoveToSheets(postsToMove, 'posts');
+        }
+        if (interactionsToMove.length > 0) {
+          await this.batchMoveToSheets(interactionsToMove, 'interactions');
+        }
+      }
+
+      elizaLogger.log('Finished processing pending approvals');
     } catch (error) {
-        elizaLogger.error('Error checking pending approvals:', error);
-        throw error;
+      elizaLogger.error('Error checking pending approvals:', error);
+      throw error;
+    }
+  }
+
+  // Helper method to process a single approval
+  async processApproval(pendingApproval, modifiedContent) {
+    const twitterClient = this.runtime.clients?.find(client => client.post)?.client?.twitterClient;
+    if (!twitterClient) {
+      throw new Error('Twitter client not found');
+    }
+
+    const contextData = typeof pendingApproval.payload.context === 'string' ? 
+      JSON.parse(pendingApproval.payload.context) : 
+      pendingApproval.payload.context;
+
+    const tweetContent = modifiedContent || pendingApproval.payload.content;
+
+    if (pendingApproval.payload.content_type === 'mention') {
+      return await twitterClient.sendTweet(tweetContent, contextData.tweet_id);
+    } else if (pendingApproval.payload.content_type === 'reply') {
+      const replyToId = contextData?.in_reply_to_id;
+      if (!replyToId) {
+        throw new Error('No in_reply_to_id found for reply');
+      }
+      return await twitterClient.sendTweet(tweetContent, replyToId);
+    } else {
+      return await twitterClient.sendTweet(tweetContent);
+    }
+  }
+
+  // Add batch operation methods
+  async batchUpdateApprovals(updates) {
+    try {
+      if (!updates || updates.length === 0) return;
+
+      elizaLogger.log(`🔄 Processing ${updates.length} approval updates in batch...`);
+
+      // Get current data
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals
+      });
+
+      if (!response.data.values) return;
+
+      const headers = response.data.values[0];
+      const approvalIdCol = headers.indexOf('approval_id');
+      const statusCol = headers.indexOf('status');
+      const tweetIdCol = headers.indexOf('tweet_id');
+      const reasonCol = headers.indexOf('reason');
+      const reviewTimestampCol = headers.indexOf('review_timestamp');
+
+      // Prepare batch update
+      const batchUpdates = [];
+      const timestamp = new Date().toISOString();
+
+      for (const update of updates) {
+        const rowIndex = response.data.values.findIndex(row => row[approvalIdCol] === update.approvalId);
+        if (rowIndex === -1) continue;
+
+        const range = `${this.sheetsConfig.ranges.approvals.split('!')[0]}!A${rowIndex + 1}:Z${rowIndex + 1}`;
+        const row = [...response.data.values[rowIndex]];
+        row[statusCol] = update.status;
+        row[tweetIdCol] = update.tweetId || '';
+        row[reasonCol] = update.reason || '';
+        row[reviewTimestampCol] = timestamp;
+
+        batchUpdates.push({
+          range,
+          values: [row]
+        });
+      }
+
+      // Execute batch update
+      if (batchUpdates.length > 0) {
+        await this.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: this.sheetsConfig.spreadsheetId,
+          requestBody: {
+            valueInputOption: 'RAW',
+            data: batchUpdates
+          }
+        });
+        elizaLogger.log(`✅ Successfully updated ${batchUpdates.length} approvals in batch`);
+      }
+    } catch (error) {
+      elizaLogger.error('❌ Error in batch approval update:', error);
+      throw error;
+    }
+  }
+
+  async batchMoveToSheets(items, type = 'posts') {
+    try {
+      if (!items || items.length === 0) return;
+
+      elizaLogger.log(`🔄 Moving ${items.length} items to ${type} sheet in batch...`);
+
+      const range = type === 'posts' ? this.sheetsConfig.ranges.posts : this.sheetsConfig.ranges.interactions;
+      const values = items.map(item => {
+        if (type === 'posts') {
+          return [
+            item.id,
+            item.text,
+            JSON.stringify(item.media_urls || []),
+            new Date().toISOString(),
+            item.permanentUrl,
+            item.inReplyToStatusId || '',
+            item.conversationId || '',
+            item.approvalId || '',
+            item.agent_name,
+            item.agent_username,
+            'posted'
+          ];
+        } else {
+          return [
+            item.type,
+            item.tweet_id,
+            item.content,
+            item.author_username,
+            item.author_name,
+            new Date().toISOString(),
+            item.permanent_url,
+            item.in_reply_to_id,
+            item.conversation_id,
+            item.agent_response,
+            item.response_tweet_id,
+            item.agent_name,
+            item.agent_username,
+            JSON.stringify(item.context || {})
+          ];
+        }
+      });
+
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values
+        }
+      });
+
+      elizaLogger.log(`✅ Successfully moved ${items.length} items to ${type} sheet`);
+    } catch (error) {
+      elizaLogger.error(`❌ Error in batch move to ${type} sheet:`, error);
+      throw error;
     }
   }
 
