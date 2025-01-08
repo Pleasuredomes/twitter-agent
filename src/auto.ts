@@ -59,6 +59,7 @@ interface ExtendedCharacter extends Character {
 interface ExtendedRuntime extends AgentRuntime {
   character: ExtendedCharacter;
   generate(options: { type: string; maxLength: number }): Promise<string>;
+  clients?: any[];
 }
 
 function initializeDatabase(dataDir: string) {
@@ -466,60 +467,21 @@ async function generateAndSendPost(runtime: ExtendedRuntime) {
   try {
     elizaLogger.info("🎲 Starting post generation process...");
     
-    const serverPort = process.env.SERVER_PORT || '3000';
-    elizaLogger.info(`🌐 Using server port: ${serverPort}`);
-    
-    // Generate a post using the runtime's message generation
-    const response = await fetch(`http://localhost:${serverPort}/${runtime.character.name}/message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: runtime.character.settings?.post?.prompt || "Generate a post",
-        userId: 'system',
-        userName: 'System',
-        roomId: runtime.character.id
-      })
-    });
-
-    if (!response.ok) {
-      elizaLogger.error("❌ Failed to generate post:", await response.text());
+    // Find the Twitter client from initialized clients
+    const twitterClient = runtime.clients?.find(client => client.post);
+    if (!twitterClient) {
+      elizaLogger.error("❌ Twitter client not found");
       return;
     }
 
-    const data = await response.json();
-    const post = data[0]?.text;
-
-    if (!post) {
-      elizaLogger.error("❌ No post was generated");
-      return;
+    elizaLogger.info("🤖 Generating new tweet...");
+    try {
+      await twitterClient.post.generateNewTweet();
+      elizaLogger.success("✅ Tweet generated and queued for approval");
+    } catch (error) {
+      elizaLogger.error("❌ Error generating tweet:", error);
     }
 
-    // Log the generated post
-    elizaLogger.success("📝 Generated post:", post);
-
-    // Send to post webhook
-    const webhookUrl = process.env.WEBHOOK_URL; // Use default webhook for posts
-    if (webhookUrl) {
-      elizaLogger.info(`🌐 Attempting to send post to webhook: ${webhookUrl}`);
-      
-      const payload = {
-        event: 'twitter_post_generated',
-        data: {
-          text: post,
-          character: runtime.character.name,
-          timestamp: new Date().toISOString(),
-          type: 'scheduled_post'
-        }
-      };
-      
-      elizaLogger.info("📦 Post webhook payload:", JSON.stringify(payload, null, 2));
-      
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-    }
   } catch (error) {
     elizaLogger.error("❌ Error in post generation process:", error);
     if (error instanceof Error) {
@@ -560,6 +522,9 @@ async function startAgent(character: ExtendedCharacter, directClient: DirectClie
     elizaLogger.info("Initializing clients...");
     const clients = await initializeClients(character, runtime);
     elizaLogger.info("Initialized clients:", clients.length);
+
+    // Store clients in runtime
+    runtime.clients = clients;
 
     directClient.registerAgent(runtime);
     

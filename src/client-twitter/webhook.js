@@ -449,47 +449,57 @@ export class WebhookHandler {
   // Send data to Google Sheets
   async sendToWebhook(event) {
     try {
-      // Determine which sheet to use based on event type
-      let range;
-      let rowData;
-
+      // For posts, store in the posts sheet directly
       if (event.type === 'post') {
-        range = this.sheetsConfig.ranges.posts;
-        rowData = [
-          event.data.incoming_tweet?.id || '',                    // tweet_id
-          event.data.text || event.data.content || '',           // content
-          JSON.stringify(event.data.media_urls || []),           // media_urls
-          new Date(event.timestamp).toISOString(),               // timestamp
-          event.data.permanentUrl || '',                         // permanent_url
-          event.data.inReplyToStatusId || '',                    // in_reply_to_id
-          event.data.conversation_id || '',                      // conversation_id
-          event.data.approvalId || '',                          // approval_id
-          this.runtime.character.name,                          // agent_name
-          this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
-          event.data.status || 'sent'                          // status
+        const rowData = [
+          event.data.id || '',                                  // tweet_id
+          event.data.text || event.data.content || '',         // content
+          JSON.stringify(event.data.media_urls || []),         // media_urls
+          new Date(event.timestamp).toISOString(),             // timestamp
+          event.data.permanentUrl || '',                       // permanent_url
+          event.data.inReplyToStatusId || '',                  // in_reply_to_id
+          event.data.conversation_id || '',                    // conversation_id
+          event.data.approvalId || '',                        // approval_id
+          this.runtime.character.name,                        // agent_name
+          this.runtime.getSetting("TWITTER_USERNAME"),        // agent_username
+          'pending_approval'                                  // status
         ];
-      } else {
-        range = this.sheetsConfig.ranges.interactions;
-        const tweet = event.data.incoming_tweet || {};
-        rowData = [
-          event.type,                                           // type
-          tweet.id || '',                                       // tweet_id
-          tweet.text || '',                                     // content
-          tweet.username || '',                                 // author_username
-          tweet.name || '',                                     // author_name
-          new Date(event.timestamp).toISOString(),              // timestamp
-          tweet.permanentUrl || '',                             // permanent_url
-          tweet.inReplyToStatusId || '',                        // in_reply_to_id
-          tweet.conversation_id || '',                          // conversation_id
-          event.data.agent_response?.text || '',                // agent_response
-          event.data.agent_response?.tweet_id || '',            // response_tweet_id
-          this.runtime.character.name,                          // agent_name
-          this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
-          JSON.stringify(event.data.context || {})              // context
-        ];
+
+        await this.sheets.spreadsheets.values.append({
+          spreadsheetId: this.sheetsConfig.spreadsheetId,
+          range: this.sheetsConfig.ranges.posts,
+          valueInputOption: 'RAW',
+          insertDataOption: 'INSERT_ROWS',
+          requestBody: {
+            values: [rowData]
+          }
+        });
+
+        elizaLogger.log('Post stored in Posts sheet with status pending_approval');
+        return;
       }
 
-      // Append the data directly without checking headers (they should be set up already)
+      // For other types of events (interactions), proceed as normal
+      let range = this.sheetsConfig.ranges.interactions;
+      const tweet = event.data.incoming_tweet || {};
+      const rowData = [
+        event.type,                                           // type
+        tweet.id || '',                                       // tweet_id
+        tweet.text || '',                                     // content
+        tweet.username || '',                                 // author_username
+        tweet.name || '',                                     // author_name
+        new Date(event.timestamp).toISOString(),              // timestamp
+        tweet.permanentUrl || '',                             // permanent_url
+        tweet.inReplyToStatusId || '',                        // in_reply_to_id
+        tweet.conversation_id || '',                          // conversation_id
+        event.data.agent_response?.text || '',                // agent_response
+        event.data.agent_response?.tweet_id || '',            // response_tweet_id
+        this.runtime.character.name,                          // agent_name
+        this.runtime.getSetting("TWITTER_USERNAME"),          // agent_username
+        JSON.stringify(event.data.context || {})              // context
+      ];
+
+      // Append interaction data
       await this.sheets.spreadsheets.values.append({
         spreadsheetId: this.sheetsConfig.spreadsheetId,
         range,
@@ -500,20 +510,9 @@ export class WebhookHandler {
         }
       });
 
-      elizaLogger.log(`Successfully sent ${event.type} event to Google Sheets`);
-
-      // Clean up event data we don't need anymore
-      event.data = null;
-
-      // Store minimal log data
-      await this.storeWebhookLog({
-        timestamp: event.timestamp,
-        type: event.type,
-        spreadsheetId: this.sheetsConfig.spreadsheetId
-      });
-
+      elizaLogger.log('Successfully sent data to webhook');
     } catch (error) {
-      elizaLogger.error('Error sending to Google Sheets:', error);
+      elizaLogger.error('Error sending data to webhook:', error);
       throw error;
     }
   }
@@ -587,12 +586,12 @@ export class WebhookHandler {
         const status = (row[statusIndex] || '').toLowerCase();
         const timestamp = new Date(row[timestampIndex]).getTime();
 
-        // Skip if not pending or too old (>24h)
-        if (status !== 'pending' || Date.now() - timestamp > 24 * 60 * 60 * 1000) {
+        // Skip if not pending and not recently approved/rejected
+        if (status === 'pending' || Date.now() - timestamp > 24 * 60 * 60 * 1000) {
           continue;
         }
 
-        elizaLogger.log(`Processing approval ${approvalId} with status ${status}`);
+        elizaLogger.log(`Processing ${status} approval ${approvalId}`);
 
         if (status === 'approved' || status === 'rejected') {
           // Process the approval/rejection
@@ -608,7 +607,6 @@ export class WebhookHandler {
       }
 
       elizaLogger.log('Finished checking pending approvals');
-
     } catch (error) {
       elizaLogger.error('Error checking pending approvals:', error);
       throw error;
