@@ -290,8 +290,8 @@ export class WebhookHandler {
             reason
         });
 
-        // Get the memory associated with this approval from cache
-        elizaLogger.log("🔍 Looking up memory for approval...");
+        // Get the pending approval from cache
+        elizaLogger.log("🔍 Looking up pending approval...");
         const pendingApproval = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
         
         if (!pendingApproval) {
@@ -300,14 +300,18 @@ export class WebhookHandler {
         }
 
         elizaLogger.log("✅ Found pending approval:", pendingApproval);
+        const contextData = typeof pendingApproval.payload.context === 'string' ? 
+            JSON.parse(pendingApproval.payload.context) : 
+            pendingApproval.payload.context;
 
         if (approved) {
-            // Send the approved tweet to Twitter
+            // Get the content to send
             const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || pendingApproval.payload.content;
             
-            elizaLogger.log("📝 Preparing to post tweet:", {
+            elizaLogger.log("📝 Preparing to post response:", {
                 content: tweetContent,
-                context: pendingApproval.payload.context,
+                type: pendingApproval.payload.content_type,
+                context: contextData,
                 length: tweetContent.length
             });
 
@@ -322,31 +326,51 @@ export class WebhookHandler {
                 elizaLogger.log("🔄 Making Twitter API call...");
                 const result = await twitterClient.sendTweet(
                     tweetContent,
-                    pendingApproval.payload.context?.inReplyTo
+                    // For interactions, reply to the original tweet_id
+                    contextData?.tweet_id || contextData?.inReplyTo
                 );
                 elizaLogger.log("✅ Twitter API response:", result);
 
                 // Update Google Sheet with success status
                 await this.updateApprovalStatus(approvalId, 'sent', result.id);
 
-                // Move to posts sheet if it was a post
+                // Handle different content types
                 if (pendingApproval.payload.content_type === 'post') {
+                    // Move to posts sheet if it was a post
                     await this.moveToPostsSheet({
                         id: result.id,
                         text: tweetContent,
                         permanentUrl: `https://twitter.com/${this.runtime.getSetting("TWITTER_USERNAME")}/status/${result.id}`,
-                        inReplyToStatusId: pendingApproval.payload.context?.inReplyTo,
+                        inReplyToStatusId: contextData?.inReplyTo,
                         conversationId: result.conversation_id,
                         approvalId: approvalId,
                         agent_name: this.runtime.character.name,
                         agent_username: this.runtime.getSetting("TWITTER_USERNAME")
                     });
+                } else {
+                    // Move to interactions sheet for mentions, replies, dms
+                    await this.moveToInteractionsSheet({
+                        type: pendingApproval.payload.content_type,
+                        tweet_id: contextData.tweet_id,
+                        content: contextData.content,
+                        author_username: contextData.author_username,
+                        author_name: contextData.author_name,
+                        permanent_url: contextData.permanent_url,
+                        in_reply_to_id: contextData.tweet_id,
+                        conversation_id: result.conversation_id,
+                        agent_response: tweetContent,
+                        response_tweet_id: result.id,
+                        agent_name: this.runtime.character.name,
+                        agent_username: this.runtime.getSetting("TWITTER_USERNAME"),
+                        context: contextData
+                    });
                 }
 
-                elizaLogger.log('✅ Successfully sent approved tweet:', {
+                elizaLogger.log('✅ Successfully sent approved content:', {
                     approvalId,
                     tweetId: result.id,
-                    text: tweetContent
+                    text: tweetContent,
+                    type: pendingApproval.payload.content_type
                 });
 
                 // Remove from pending approvals
@@ -354,7 +378,7 @@ export class WebhookHandler {
                 await this.runtime.cacheManager.delete(`pending_approvals/${approvalId}`);
 
             } catch (error) {
-                elizaLogger.error('❌ Error sending tweet to Twitter:', {
+                elizaLogger.error('❌ Error sending to Twitter:', {
                     error: {
                         name: error.name,
                         message: error.message,
@@ -363,10 +387,11 @@ export class WebhookHandler {
                         response: error.response?.data,
                         status: error.response?.status
                     },
-                    tweet: {
-                        content: tweetContent,
+                    content: {
+                        text: tweetContent,
                         length: tweetContent.length,
-                        context: pendingApproval.payload.context
+                        type: pendingApproval.payload.content_type,
+                        context: contextData
                     },
                     client: {
                         found: !!this.runtime.clients?.find(client => client.post),
@@ -387,8 +412,9 @@ export class WebhookHandler {
             this.pendingApprovals.delete(approvalId);
             await this.runtime.cacheManager.delete(`pending_approvals/${approvalId}`);
 
-            elizaLogger.log('ℹ️ Tweet rejected:', {
+            elizaLogger.log('ℹ️ Content rejected:', {
                 approvalId,
+                type: pendingApproval.payload.content_type,
                 reason
             });
         }
