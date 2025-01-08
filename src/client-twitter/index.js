@@ -63,6 +63,7 @@ var TwitterPostClient = class {
       await this.client.init();
     }
 
+    // Start the post generation loop
     const generateNewTweetLoop = async () => {
       try {
         elizaLogger.log("Running tweet generation cycle");
@@ -83,7 +84,9 @@ var TwitterPostClient = class {
         
         if (shouldGenerateNow) {
           elizaLogger.log("Generating new tweet...");
-          await this.generateNewTweet();
+          await this.generateNewTweet().catch(err => {
+            elizaLogger.error("Error generating tweet:", err);
+          });
           elizaLogger.log("Tweet generation complete");
         }
 
@@ -96,6 +99,20 @@ var TwitterPostClient = class {
       }
     };
 
+    // Start the interaction monitoring loop
+    const handleTwitterInteractionsLoop = () => {
+      elizaLogger.log("Running interaction check cycle");
+      this.handleTwitterInteractions()
+        .catch(error => elizaLogger.error("Error in interaction loop:", error))
+        .finally(() => {
+          // Schedule next check in 2-5 minutes
+          setTimeout(
+            handleTwitterInteractionsLoop,
+            (Math.floor(Math.random() * (5 - 2 + 1)) + 2) * 60 * 1000
+          );
+        });
+    };
+
     // Generate first tweet immediately if requested
     if (postImmediately) {
       elizaLogger.log("Generating initial tweet...");
@@ -104,9 +121,11 @@ var TwitterPostClient = class {
       });
     }
 
-    // Start the generation loop
+    // Start both loops independently
     generateNewTweetLoop();
-    elizaLogger.log("Tweet generation service started");
+    handleTwitterInteractionsLoop();
+    
+    elizaLogger.log("Tweet generation and interaction monitoring services started");
   }
 
   async generateNewTweet() {
@@ -599,67 +618,17 @@ var TwitterInteractionClient = class {
         return;
       }
 
-      elizaLogger.log(`Found ${tweetCandidates.length} potential interactions`);
-      
-      const uniqueTweetCandidates = [...new Set(tweetCandidates)]
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .filter((tweet) => tweet.userId !== this.client.profile.id);
-
-      for (const tweet of uniqueTweetCandidates) {
-        if (!this.client.lastCheckedTweetId || parseInt(tweet.id) > parseInt(this.client.lastCheckedTweetId)) {
-          elizaLogger.log("Processing new tweet:", tweet.id);
-
-          // Build conversation thread for context
-          const thread = await this.buildConversationThread(tweet);
-
-          // Generate agent's response
-          const state = await this.runtime.composeState(
+      // Process each tweet candidate
+      for (const tweet of tweetCandidates) {
+        try {
+          // Queue for approval
+          const result = await this.webhookHandler.queueForApproval(
             {
-              userId: stringToUuid("twitter_user_" + tweet.userId),
-              roomId: stringToUuid("twitter_room_" + tweet.conversationId),
-              agentId: this.runtime.agentId,
-              content: {
-                text: tweet.text,
-                source: "twitter",
-                url: tweet.permanentUrl
-              }
+              user: this.runtime.character.name.toLowerCase(),
+              text: "",  // Will be filled by the agent
+              action: "NONE"
             },
-            {
-              twitterUserName: this.client.profile.username,
-              currentPost: tweet.text,
-              formattedConversation: thread.map(t => 
-                `@${t.username}: ${t.text}`
-              ).join('\n\n')
-            }
-          );
-
-          const context = composeContext({
-            state,
-            template: twitterMessageHandlerTemplate
-          });
-
-          elizaLogger.log("Generating response to tweet:", tweet.id);
-          const response = await generateText({
-            runtime: this.runtime,
-            context,
-            modelClass: ModelClass.SMALL
-          });
-
-          if (!response) {
-            elizaLogger.error("No response generated for tweet:", tweet.id);
-            continue;
-          }
-
-          // Determine the event type
-          let eventType = 'mention';
-          if (tweet.referenced_tweets?.some(ref => ref.type === 'replied_to')) {
-            eventType = 'reply';
-          }
-
-          // Queue the generated response for approval
-          const approvalResult = await this.webhookHandler.queueForApproval(
-            response.trim(),
-            eventType,
+            "mention",
             {
               tweet_id: tweet.id,
               author_username: tweet.username,
@@ -670,47 +639,31 @@ var TwitterInteractionClient = class {
             }
           );
 
-          elizaLogger.log(`Queued ${eventType} response for approval:`, {
-            originalTweet: tweet.text,
-            response: response.trim(),
-            approvalId: approvalResult.approvalId
-          });
+          // If queueForApproval returns null, it means this tweet was skipped (duplicate)
+          // Just continue to the next tweet
+          if (!result) {
+            elizaLogger.log("Skipped duplicate tweet, continuing to next one:", tweet.id);
+            continue;
+          }
 
-          // Send to webhook for tracking
-          await this.webhookHandler.sendToWebhook({
-            type: eventType,
-            data: {
-              tweet: {
-                id: tweet.id,
-                text: tweet.text,
-                username: tweet.username,
-                name: tweet.name,
-                permanentUrl: tweet.permanentUrl,
-                timestamp: tweet.timestamp,
-                inReplyToStatusId: tweet.inReplyToStatusId
-              },
-              agent_response: {
-                text: response.trim(),
-                approvalId: approvalResult.approvalId
-              },
-              context: {
-                foundAt: new Date().toISOString(),
-                searchQuery: `@${twitterUsername}`
-              }
-            },
-            timestamp: Date.now()
+          elizaLogger.log("Queued mention for approval:", {
+            tweetId: tweet.id,
+            approvalId: result.approvalId
           });
-
-          // Update last checked ID
-          this.client.lastCheckedTweetId = tweet.id;
-          await this.client.cacheLatestCheckedTweetId();
+        } catch (error) {
+          elizaLogger.error("Error processing tweet:", {
+            error,
+            tweet: {
+              id: tweet.id,
+              text: tweet.text
+            }
+          });
+          // Continue with next tweet even if this one fails
+          continue;
         }
       }
-
-      elizaLogger.log("Finished processing interactions");
     } catch (error) {
-      elizaLogger.error("Error handling Twitter interactions:", error);
-      throw error;
+      elizaLogger.error("Error in interaction loop:", error);
     }
   }
 
