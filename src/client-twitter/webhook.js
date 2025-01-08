@@ -338,7 +338,22 @@ export class WebhookHandler {
 
         if (approved) {
             // Get the content to send
-            const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || pendingApproval.payload.content;
+            let tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || pendingApproval.payload.content;
+            
+            // Extract text from JSON if needed
+            if (tweetContent.includes('```json')) {
+                try {
+                    // Extract the JSON content between the backticks
+                    const jsonMatch = tweetContent.match(/```json\s*(.*?)\s*```/s);
+                    if (jsonMatch) {
+                        const jsonContent = jsonMatch[1].replace(/\\"/g, '"');  // Fix escaped quotes
+                        const parsed = JSON.parse(jsonContent);
+                        tweetContent = parsed.text;
+                    }
+                } catch (e) {
+                    elizaLogger.warn('Failed to parse JSON content, using as is:', e);
+                }
+            }
             
             elizaLogger.log("📝 Preparing to post response:", {
                 content: tweetContent,
