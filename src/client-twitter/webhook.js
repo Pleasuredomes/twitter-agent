@@ -392,7 +392,15 @@ export class WebhookHandler {
 
                         elizaLogger.log("📝 Twitter client structure:", {
                             hasClient: !!twitterClient,
-                            clientMethods: Object.keys(twitterClient || {})
+                            clientMethods: Object.keys(twitterClient || {}),
+                            hasProfile: !!twitterClient.profile,
+                            hasSession: !!twitterClient.session,
+                            sendTweetMethod: typeof twitterClient.sendTweet,
+                            clientState: {
+                                isLoggedIn: !!twitterClient.isLoggedIn,
+                                username: twitterClient.profile?.username,
+                                userId: twitterClient.profile?.userId
+                            }
                         });
 
                         // Use sendTweet method that was working previously
@@ -405,12 +413,26 @@ export class WebhookHandler {
                             elizaLogger.log("📝 Replying to mention:", {
                                 replyToId,
                                 content: tweetContent,
-                                originalTweet: contextData?.content
+                                originalTweet: contextData?.content,
+                                fullContext: contextData
                             });
+
+                            // Add @ mention if not present
+                            const mentionPrefix = `@${contextData.author_username}`;
+                            const finalContent = tweetContent.startsWith(mentionPrefix) ? 
+                                tweetContent : 
+                                `${mentionPrefix} ${tweetContent}`;
+
                             postResult = await twitterClient.sendTweet(
-                                tweetContent,
+                                finalContent,
                                 replyToId
                             );
+
+                            elizaLogger.log("✅ Sent reply to mention:", {
+                                replyToId,
+                                content: finalContent,
+                                result: postResult
+                            });
                         } else if (pendingApproval.payload.content_type === 'reply') {
                             // For replies, use the in_reply_to_id
                             const replyToId = contextData?.in_reply_to_id;
