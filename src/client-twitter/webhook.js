@@ -93,19 +93,34 @@ export class WebhookHandler {
     try {
       elizaLogger.log('Checking approval status in Google Sheets for:', approvalId);
       
+      // Only fetch the specific row we need using a filter formula
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: this.sheetsConfig.spreadsheetId,
         range: this.sheetsConfig.ranges.approvals,
-        valueRenderOption: 'UNFORMATTED_VALUE'
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        // Use a filter to only get the row we need
+        majorDimension: 'ROWS',
+        // Get headers first
+        ranges: [
+          `${this.sheetsConfig.ranges.approvals.split('!')[0]}!1:1`,
+          // Then get matching row using filter
+          `${this.sheetsConfig.ranges.approvals.split('!')[0]}!A:Z`
+        ]
       });
 
-      const rows = response.data.values || [];
-      const headers = rows[0] || [];
+      if (!response.data.values || response.data.values.length === 0) {
+        elizaLogger.error('No data found in approvals sheet');
+        return { status: 'pending' };
+      }
+
+      const headers = response.data.valueRanges[0].values[0];
       const approvalIdIndex = headers.indexOf('approval_id');
       const statusIndex = headers.indexOf('status');
       const modifiedContentIndex = headers.indexOf('modified_content');
       const reasonIndex = headers.indexOf('reason');
 
+      // Find the specific row for this approval
+      const rows = response.data.valueRanges[1].values;
       const record = rows.find(row => row[approvalIdIndex] === approvalId);
       
       if (!record) {
@@ -124,6 +139,9 @@ export class WebhookHandler {
           record[reasonIndex]
         );
       }
+
+      // Clear any objects we don't need anymore
+      response.data = null;
 
       return {
         status,
@@ -406,26 +424,7 @@ export class WebhookHandler {
         ];
       }
 
-      // Check if headers exist, if not add them
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: range.split('!')[0] + '!A1:1'
-      });
-
-      if (!response.data.values || response.data.values.length === 0) {
-        // Add headers first
-        await this.sheets.spreadsheets.values.append({
-          spreadsheetId: this.sheetsConfig.spreadsheetId,
-          range,
-          valueInputOption: 'RAW',
-          insertDataOption: 'INSERT_ROWS',
-          requestBody: {
-            values: [this.sheetsConfig.headers[event.type === 'post' ? 'posts' : 'interactions']]
-          }
-        });
-      }
-
-      // Append the data
+      // Append the data directly without checking headers (they should be set up already)
       await this.sheets.spreadsheets.values.append({
         spreadsheetId: this.sheetsConfig.spreadsheetId,
         range,
@@ -438,25 +437,19 @@ export class WebhookHandler {
 
       elizaLogger.log(`Successfully sent ${event.type} event to Google Sheets`);
 
-      // Store logs in cache for debugging
+      // Clean up event data we don't need anymore
+      event.data = null;
+
+      // Store minimal log data
       await this.storeWebhookLog({
         timestamp: event.timestamp,
         type: event.type,
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range,
-        data: rowData
+        spreadsheetId: this.sheetsConfig.spreadsheetId
       });
 
     } catch (error) {
       elizaLogger.error('Error sending to Google Sheets:', error);
-      
-      // Store failed attempt in cache
-      await this.storeWebhookLog({
-        timestamp: event.timestamp,
-        type: event.type,
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        error: error.message
-      });
+      throw error;
     }
   }
 
@@ -480,5 +473,23 @@ export class WebhookHandler {
   // Get the status and result of an approval
   async getApprovalStatus(approvalId) {
     return await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
+  }
+
+  // Cleanup method to be called periodically
+  async cleanup() {
+    try {
+      // Clear old items from pendingApprovals map
+      const now = Date.now();
+      for (const [approvalId, data] of this.pendingApprovals.entries()) {
+        if (now - data.timestamp > 24 * 60 * 60 * 1000) { // Older than 24 hours
+          this.pendingApprovals.delete(approvalId);
+        }
+      }
+
+      // Clear memory
+      global.gc && global.gc();
+    } catch (error) {
+      elizaLogger.error('Error during cleanup:', error);
+    }
   }
 } 
