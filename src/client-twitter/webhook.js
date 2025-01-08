@@ -590,57 +590,83 @@ export class WebhookHandler {
 
   async checkPendingApprovals() {
     try {
-      elizaLogger.log('Checking pending approvals...');
-      
-      // Get all rows from approvals sheet
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: this.sheetsConfig.ranges.approvals
-      });
+        elizaLogger.log('Checking pending approvals...');
+        
+        // Get all rows from approvals sheet
+        const response = await this.sheets.spreadsheets.values.get({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals
+        });
 
-      if (!response.data.values || response.data.values.length < 2) {
-        elizaLogger.log('No approvals to check');
-        return;
-      }
-
-      const headers = response.data.values[0];
-      const approvalIdIndex = headers.indexOf('approval_id');
-      const statusIndex = headers.indexOf('status');
-      const contentIndex = headers.indexOf('content');
-      const modifiedContentIndex = headers.indexOf('modified_content');
-      const reasonIndex = headers.indexOf('reason');
-      const timestampIndex = headers.indexOf('timestamp');
-
-      // Process each row
-      for (const row of response.data.values.slice(1)) {
-        const approvalId = row[approvalIdIndex];
-        const status = (row[statusIndex] || '').toLowerCase();
-        const timestamp = new Date(row[timestampIndex]).getTime();
-
-        // Skip if not pending and not recently approved/rejected
-        if (status === 'pending' || Date.now() - timestamp > 24 * 60 * 60 * 1000) {
-          continue;
+        if (!response.data.values || response.data.values.length < 2) {
+            elizaLogger.log('No approvals to check');
+            return;
         }
 
-        elizaLogger.log(`Processing ${status} approval ${approvalId}`);
+        const headers = response.data.values[0];
+        const approvalIdIndex = headers.indexOf('approval_id');
+        const statusIndex = headers.indexOf('status');
+        const contentIndex = headers.indexOf('content');
+        const modifiedContentIndex = headers.indexOf('modified_content');
+        const reasonIndex = headers.indexOf('reason');
+        const timestampIndex = headers.indexOf('timestamp');
+        const contentTypeIndex = headers.indexOf('content_type');
+        const contextIndex = headers.indexOf('context');
 
-        if (status === 'approved' || status === 'rejected') {
-          // Process the approval/rejection
-          await this.handleApprovalResponse(
-            approvalId,
-            status === 'approved',
-            row[modifiedContentIndex] || row[contentIndex],
-            row[reasonIndex]
-          );
+        // Process each row
+        for (const row of response.data.values.slice(1)) {
+            const approvalId = row[approvalIdIndex];
+            const status = (row[statusIndex] || '').toLowerCase();
+            const timestamp = new Date(row[timestampIndex]).getTime();
+            const contentType = row[contentTypeIndex];
+            const context = row[contextIndex] ? JSON.parse(row[contextIndex]) : {};
 
-          elizaLogger.log(`Processed ${status} for approval ${approvalId}`);
+            // Skip if not pending and not recently approved/rejected
+            if (status !== 'approved' && status !== 'rejected') {
+                continue;
+            }
+
+            elizaLogger.log(`Processing ${status} approval ${approvalId}`, {
+                approvalId,
+                status,
+                contentType,
+                hasContext: !!context
+            });
+
+            // Check if we have this approval in cache
+            const cachedApproval = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
+            if (!cachedApproval) {
+                elizaLogger.log(`Creating cache entry for approval ${approvalId}`);
+                // Create a cache entry for this approval
+                await this.runtime.cacheManager.set(`pending_approvals/${approvalId}`, {
+                    payload: {
+                        approval_id: approvalId,
+                        content_type: contentType,
+                        content: row[contentIndex],
+                        context: context,
+                        agent_name: this.runtime.character.name,
+                        agent_username: this.runtime.getSetting("TWITTER_USERNAME")
+                    },
+                    status: 'pending',
+                    timestamp: timestamp
+                });
+            }
+
+            // Process the approval/rejection
+            await this.handleApprovalResponse(
+                approvalId,
+                status === 'approved',
+                row[modifiedContentIndex] || row[contentIndex],
+                row[reasonIndex]
+            );
+
+            elizaLogger.log(`Processed ${status} for approval ${approvalId}`);
         }
-      }
 
-      elizaLogger.log('Finished checking pending approvals');
+        elizaLogger.log('Finished checking pending approvals');
     } catch (error) {
-      elizaLogger.error('Error checking pending approvals:', error);
-      throw error;
+        elizaLogger.error('Error checking pending approvals:', error);
+        throw error;
     }
   }
 
