@@ -73,13 +73,19 @@ export class WebhookHandler {
     this.runtime = runtime;
     this.pendingApprovals = new Map();
 
-    // Add rate limiting properties
+    // Update rate limiting properties with more conservative values
     this.sheetsRateLimit = {
       lastRequest: 0,
-      minDelay: 1000, // Minimum 1 second between requests
-      backoffDelay: 1000, // Initial backoff delay
-      maxBackoff: 60000, // Maximum backoff of 60 seconds
-      consecutiveErrors: 0
+      minDelay: 2000,        // Increase minimum delay to 2 seconds between requests
+      backoffDelay: 2000,    // Start with 2 second backoff
+      maxBackoff: 300000,    // Maximum backoff of 5 minutes
+      consecutiveErrors: 0,
+      quotaWindow: {         // Add quota window tracking
+        startTime: Date.now(),
+        requestCount: 0,
+        maxRequests: 50,     // Maximum requests per minute
+        windowSize: 60000    // 1 minute window
+      }
     };
   }
 
@@ -801,23 +807,49 @@ export class WebhookHandler {
     }
   }
 
-  // Add rate limiting helper method
+  // Update rate limiting helper method with quota window
   async rateLimitedSheetsOperation(operation) {
     const now = Date.now();
-    const timeSinceLastRequest = now - this.sheetsRateLimit.lastRequest;
+    
+    // Check and update quota window
+    if (now - this.sheetsRateLimit.quotaWindow.startTime > this.sheetsRateLimit.quotaWindow.windowSize) {
+      // Reset window if it's expired
+      this.sheetsRateLimit.quotaWindow = {
+        startTime: now,
+        requestCount: 0,
+        maxRequests: 50,
+        windowSize: 60000
+      };
+    } else if (this.sheetsRateLimit.quotaWindow.requestCount >= this.sheetsRateLimit.quotaWindow.maxRequests) {
+      // Wait for the current window to expire if we've hit the quota
+      const waitTime = (this.sheetsRateLimit.quotaWindow.startTime + this.sheetsRateLimit.quotaWindow.windowSize) - now;
+      elizaLogger.warn(`Quota window full, waiting ${waitTime/1000} seconds for reset...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      // Reset window
+      this.sheetsRateLimit.quotaWindow = {
+        startTime: Date.now(),
+        requestCount: 0,
+        maxRequests: 50,
+        windowSize: 60000
+      };
+    }
     
     // Ensure minimum delay between requests
+    const timeSinceLastRequest = now - this.sheetsRateLimit.lastRequest;
     if (timeSinceLastRequest < this.sheetsRateLimit.minDelay) {
       await new Promise(resolve => setTimeout(resolve, this.sheetsRateLimit.minDelay - timeSinceLastRequest));
     }
 
     try {
+      // Increment request count before making request
+      this.sheetsRateLimit.quotaWindow.requestCount++;
+      
       // Attempt the operation
       const result = await operation();
       
       // Reset backoff on success
       this.sheetsRateLimit.consecutiveErrors = 0;
-      this.sheetsRateLimit.backoffDelay = 1000;
+      this.sheetsRateLimit.backoffDelay = 2000; // Reset to initial 2 second delay
       this.sheetsRateLimit.lastRequest = Date.now();
       
       return result;
@@ -833,6 +865,14 @@ export class WebhookHandler {
         elizaLogger.warn(`Google Sheets quota exceeded, backing off for ${this.sheetsRateLimit.backoffDelay/1000} seconds...`);
         await new Promise(resolve => setTimeout(resolve, this.sheetsRateLimit.backoffDelay));
 
+        // Reset quota window after backoff
+        this.sheetsRateLimit.quotaWindow = {
+          startTime: Date.now(),
+          requestCount: 0,
+          maxRequests: 50,
+          windowSize: 60000
+        };
+
         // Retry the operation
         return this.rateLimitedSheetsOperation(operation);
       }
@@ -840,7 +880,21 @@ export class WebhookHandler {
     }
   }
 
-  // Update the checkPendingApprovals method to use rate limiting
+  // Add batch helper method
+  async batchSheetsOperation(ranges) {
+    try {
+      return await this.rateLimitedSheetsOperation(async () => {
+        return this.sheets.spreadsheets.values.batchGet({
+          spreadsheetId: this.sheetsConfig.spreadsheetId,
+          ranges: ranges
+        });
+      });
+    } catch (error) {
+      elizaLogger.error('Error in batch sheets operation:', error);
+      throw error;
+    }
+  }
+
   async checkPendingApprovals() {
     try {
         elizaLogger.log('Checking pending approvals...');
@@ -856,20 +910,21 @@ export class WebhookHandler {
             return;
         }
         
-        // Get all rows from approvals sheet with rate limiting
-        const response = await this.rateLimitedSheetsOperation(async () => {
-            return this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.sheetsConfig.spreadsheetId,
-                range: this.sheetsConfig.ranges.approvals
-            });
-        });
+        // Get all needed sheets data in one batch operation
+        const batchResponse = await this.batchSheetsOperation([
+            this.sheetsConfig.ranges.approvals,
+            this.sheetsConfig.ranges.interactions
+        ]);
 
-        if (!response.data.values || response.data.values.length < 2) {
+        if (!batchResponse.data.valueRanges[0].values || batchResponse.data.valueRanges[0].values.length < 2) {
             elizaLogger.log('No approvals to check');
             return;
         }
 
-        const headers = response.data.values[0];
+        const approvalsData = batchResponse.data.valueRanges[0].values;
+        const interactionsData = batchResponse.data.valueRanges[1].values || [];
+
+        const headers = approvalsData[0];
         const approvalIdIndex = headers.indexOf('approval_id');
         const statusIndex = headers.indexOf('status');
         const contentIndex = headers.indexOf('content');
@@ -879,8 +934,22 @@ export class WebhookHandler {
         const contentTypeIndex = headers.indexOf('content_type');
         const contextIndex = headers.indexOf('context');
 
-        // Process each row
-        for (const row of response.data.values.slice(1)) {
+        // Create a map of existing interactions for quick lookup
+        const existingInteractions = new Map();
+        if (interactionsData.length > 0) {
+            const interactionHeaders = interactionsData[0];
+            const tweetIdIndex = interactionHeaders.indexOf('tweet_id');
+            const responseIdIndex = interactionHeaders.indexOf('response_tweet_id');
+            
+            for (const row of interactionsData.slice(1)) {
+                if (row[tweetIdIndex] && row[responseIdIndex]) {
+                    existingInteractions.set(row[tweetIdIndex], row[responseIdIndex]);
+                }
+            }
+        }
+
+        // Process each approval row
+        for (const row of approvalsData.slice(1)) {
             const approvalId = row[approvalIdIndex];
             const status = (row[statusIndex] || '').toLowerCase();
             const timestamp = new Date(row[timestampIndex]).getTime();
@@ -890,6 +959,14 @@ export class WebhookHandler {
             // Skip if not pending and not recently approved/rejected
             if (status !== 'approved' && status !== 'rejected') {
                 continue;
+            }
+
+            // For mentions, check if we already have a response
+            if (contentType === 'mention' && context.tweet_id) {
+                if (existingInteractions.has(context.tweet_id)) {
+                    elizaLogger.log(`Skipping mention - already has response for tweet: ${context.tweet_id}`);
+                    continue;
+                }
             }
 
             elizaLogger.log(`Processing ${status} approval ${approvalId}`, {
