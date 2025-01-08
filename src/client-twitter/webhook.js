@@ -166,117 +166,113 @@ export class WebhookHandler {
   // Queue tweet for approval
   async queueForApproval(content, type, context = {}) {
     try {
-      const approvalId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
-      // Ensure content is properly formatted
-      const formattedContent = typeof content === 'object' ? 
-        (content.text || content.toString()) : 
-        (content || '');
+        const approvalId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Format content based on type
+        let formattedContent;
+        if (type === 'mention' || type === 'reply') {
+            // For mentions/replies, include both original tweet and response
+            formattedContent = typeof content === 'string' ? content : content.text || '';
+        } else {
+            // For posts, just use the content directly
+            formattedContent = typeof content === 'object' ? 
+                (content.text || content.toString()) : 
+                (content || '');
+        }
 
-      // Log the content being queued
-      elizaLogger.log('Formatting content for approval:', {
-        originalContent: content,
-        formattedContent,
-        type
-      });
-
-      const approvalData = {
-        approval_id: approvalId,
-        content_type: type,
-        content: formattedContent,
-        modified_content: '',
-        context: typeof context === 'object' ? JSON.stringify(context) : context,
-        agent_name: this.runtime.character.name,
-        agent_username: this.runtime.getSetting("TWITTER_USERNAME"),
-        status: 'pending',
-        timestamp: new Date().toISOString(),
-        review_timestamp: '',
-        reviewer: '',
-        reason: '',
-        tweet_id: ''
-      };
-
-      // Check if headers exist, if not add them
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: this.sheetsConfig.ranges.approvals.split('!')[0] + '!A1:1'
-      });
-
-      if (!response.data.values || response.data.values.length === 0) {
-        // Add headers first
-        await this.sheets.spreadsheets.values.append({
-          spreadsheetId: this.sheetsConfig.spreadsheetId,
-          range: this.sheetsConfig.ranges.approvals,
-          valueInputOption: 'RAW',
-          insertDataOption: 'INSERT_ROWS',
-          requestBody: {
-            values: [this.sheetsConfig.headers.approvals]
-          }
+        // Log the content being queued
+        elizaLogger.log('Formatting content for approval:', {
+            originalContent: content,
+            formattedContent,
+            type,
+            context
         });
-      }
 
-      // Add to Google Sheets
-      await this.sheets.spreadsheets.values.append({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: this.sheetsConfig.ranges.approvals,
-        valueInputOption: 'RAW',
-        insertDataOption: 'INSERT_ROWS',
-        requestBody: {
-          values: [[
-            approvalData.approval_id,
-            approvalData.content_type,
-            approvalData.content,
-            approvalData.modified_content,
-            approvalData.context,
-            approvalData.agent_name,
-            approvalData.agent_username,
-            approvalData.status,
-            approvalData.timestamp,
-            approvalData.review_timestamp,
-            approvalData.reviewer,
-            approvalData.reason,
-            approvalData.tweet_id
-          ]]
+        const approvalData = {
+            approval_id: approvalId,
+            content_type: type,
+            content: formattedContent,
+            modified_content: '',
+            context: typeof context === 'object' ? JSON.stringify(context) : context,
+            agent_name: this.runtime.character.name,
+            agent_username: this.runtime.getSetting("TWITTER_USERNAME"),
+            status: 'pending',
+            timestamp: new Date().toISOString(),
+            review_timestamp: '',
+            reviewer: '',
+            reason: '',
+            tweet_id: ''
+        };
+
+        // Check if headers exist, if not add them
+        const response = await this.sheets.spreadsheets.values.get({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals.split('!')[0] + '!A1:1'
+        });
+
+        if (!response.data.values || response.data.values.length === 0) {
+            // Add headers first
+            await this.sheets.spreadsheets.values.append({
+                spreadsheetId: this.sheetsConfig.spreadsheetId,
+                range: this.sheetsConfig.ranges.approvals,
+                valueInputOption: 'RAW',
+                insertDataOption: 'INSERT_ROWS',
+                requestBody: {
+                    values: [this.sheetsConfig.headers.approvals]
+                }
+            });
         }
-      });
 
-      // Store in pending queue
-      this.pendingApprovals.set(approvalId, {
-        payload: approvalData,
-        status: 'pending',
-        timestamp: Date.now()
-      });
+        // Add to Google Sheets
+        await this.sheets.spreadsheets.values.append({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals,
+            valueInputOption: 'RAW',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: {
+                values: [[
+                    approvalData.approval_id,
+                    approvalData.content_type,
+                    approvalData.content,
+                    approvalData.modified_content,
+                    approvalData.context,
+                    approvalData.agent_name,
+                    approvalData.agent_username,
+                    approvalData.status,
+                    approvalData.timestamp,
+                    approvalData.review_timestamp,
+                    approvalData.reviewer,
+                    approvalData.reason,
+                    approvalData.tweet_id
+                ]]
+            }
+        });
 
-      // Store in cache for persistence
-      await this.runtime.cacheManager.set(
-        `pending_approvals/${approvalId}`,
-        {
-          payload: approvalData,
-          status: 'pending',
-          timestamp: Date.now()
-        }
-      );
+        // Store in pending queue
+        this.pendingApprovals.set(approvalId, {
+            payload: approvalData,
+            status: 'pending',
+            timestamp: Date.now()
+        });
 
-      // Start checking status periodically (every 5 minutes)
-      const checkStatus = async () => {
-        const status = await this.checkApprovalStatus(approvalId);
-        if (status.status === 'pending') {
-          // Check again in 5 minutes
-          setTimeout(checkStatus, 5 * 60 * 1000);
-        }
-      };
+        // Store in cache for persistence
+        await this.runtime.cacheManager.set(
+            `pending_approvals/${approvalId}`,
+            {
+                payload: approvalData,
+                status: 'pending',
+                timestamp: Date.now()
+            }
+        );
 
-      // Start first check in 5 minutes
-      setTimeout(checkStatus, 5 * 60 * 1000);
-
-      return {
-        approvalId,
-        status: 'pending'
-      };
+        return {
+            approvalId,
+            status: 'pending'
+        };
 
     } catch (error) {
-      elizaLogger.error('Error queueing for approval:', error);
-      throw error;
+        elizaLogger.error('Error queueing for approval:', error);
+        throw error;
     }
   }
 
@@ -326,8 +322,8 @@ export class WebhookHandler {
                 elizaLogger.log("🔄 Making Twitter API call...");
                 const result = await twitterClient.sendTweet(
                     tweetContent,
-                    // For interactions, reply to the original tweet_id
-                    contextData?.tweet_id || contextData?.inReplyTo
+                    // For mentions/replies, use the original tweet_id as reply_to
+                    pendingApproval.payload.content_type === 'post' ? undefined : contextData?.tweet_id
                 );
                 elizaLogger.log("✅ Twitter API response:", result);
 
