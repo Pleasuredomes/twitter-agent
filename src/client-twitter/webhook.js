@@ -293,6 +293,7 @@ export class WebhookHandler {
         reason
       });
 
+      // Get the pending approval data
       const pending = this.pendingApprovals.get(approvalId);
       if (!pending) {
         // Try to get from cache
@@ -304,13 +305,6 @@ export class WebhookHandler {
         // Restore from cache to pending queue
         this.pendingApprovals.set(approvalId, cached);
       }
-
-      const result = {
-        approved,
-        modifiedContent: modifiedContent || (pending?.payload?.content),
-        reason,
-        approvalId
-      };
 
       // Update status in Google Sheets
       const response = await this.sheets.spreadsheets.values.get({
@@ -349,25 +343,73 @@ export class WebhookHandler {
           }
         });
 
-        // If approved and successfully posted, update the tweet_id
+        // If approved, post to Twitter and update appropriate sheet
         if (approved) {
-          const tweetResult = await this.runtime.emit('content_approved', {
-            type: pending?.payload?.content_type,
-            content: modifiedContent || pending?.payload?.content,
-            context: pending?.payload?.context,
-            approvalId
-          });
+          try {
+            elizaLogger.log('Posting approved content to Twitter...');
+            
+            const finalContent = modifiedContent || pending?.payload?.content;
+            const contentType = pending?.payload?.content_type;
+            const context = pending?.payload?.context;
 
-          if (tweetResult?.tweet_id) {
-            // Update the tweet_id in the sheet
-            await this.sheets.spreadsheets.values.update({
-              spreadsheetId: this.sheetsConfig.spreadsheetId,
-              range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!M${rowIndex + 1}`, // Column M is tweet_id
-              valueInputOption: 'RAW',
-              requestBody: {
-                values: [[tweetResult.tweet_id]]
-              }
+            // Post to Twitter
+            const tweetResult = await this.runtime.emit('content_approved', {
+              type: contentType,
+              content: finalContent,
+              context: context,
+              approvalId
             });
+
+            if (tweetResult?.tweet_id) {
+              // Update the tweet_id in the approvals sheet
+              await this.sheets.spreadsheets.values.update({
+                spreadsheetId: this.sheetsConfig.spreadsheetId,
+                range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!M${rowIndex + 1}`, // Column M is tweet_id
+                valueInputOption: 'RAW',
+                requestBody: {
+                  values: [[tweetResult.tweet_id]]
+                }
+              });
+
+              // Move to appropriate sheet based on content type
+              const tweetData = {
+                id: tweetResult.tweet_id,
+                text: finalContent,
+                media_urls: tweetResult.media_urls || [],
+                permanentUrl: `https://twitter.com/${pending?.payload?.agent_username}/status/${tweetResult.tweet_id}`,
+                inReplyToStatusId: context?.inReplyTo,
+                conversationId: context?.conversationId,
+                approvalId,
+                agent_name: pending?.payload?.agent_name,
+                agent_username: pending?.payload?.agent_username
+              };
+
+              if (contentType === 'post') {
+                await this.moveToPostsSheet(tweetData);
+              } else {
+                const interactionData = {
+                  type: contentType,
+                  tweet_id: tweetResult.tweet_id,
+                  content: finalContent,
+                  author_username: context?.author_username,
+                  author_name: context?.author_name,
+                  permanent_url: tweetData.permanentUrl,
+                  in_reply_to_id: context?.inReplyTo,
+                  conversation_id: context?.conversationId,
+                  agent_response: finalContent,
+                  response_tweet_id: tweetResult.tweet_id,
+                  agent_name: pending?.payload?.agent_name,
+                  agent_username: pending?.payload?.agent_username,
+                  context: context
+                };
+                await this.moveToInteractionsSheet(interactionData);
+              }
+
+              elizaLogger.log('Successfully posted to Twitter and updated sheets:', tweetResult.tweet_id);
+            }
+          } catch (error) {
+            elizaLogger.error('Error posting approved content to Twitter:', error);
+            throw error;
           }
         }
       }
@@ -378,14 +420,26 @@ export class WebhookHandler {
         {
           ...pending,
           status: approved ? 'approved' : 'rejected',
-          result
+          result: {
+            approved,
+            modifiedContent: modifiedContent || (pending?.payload?.content),
+            reason,
+            approvalId
+          }
         }
       );
 
       // Remove from pending queue
       this.pendingApprovals.delete(approvalId);
 
-      return result;
+      elizaLogger.log(`Successfully processed ${approved ? 'approval' : 'rejection'} for ID: ${approvalId}`);
+      return {
+        approved,
+        modifiedContent: modifiedContent || (pending?.payload?.content),
+        reason,
+        approvalId
+      };
+
     } catch (error) {
       elizaLogger.error('Error handling approval response:', error);
       throw error;
@@ -501,6 +555,134 @@ export class WebhookHandler {
       global.gc && global.gc();
     } catch (error) {
       elizaLogger.error('Error during cleanup:', error);
+    }
+  }
+
+  async checkPendingApprovals() {
+    try {
+      elizaLogger.log('Checking pending approvals...');
+      
+      // Get all rows from approvals sheet
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.approvals
+      });
+
+      if (!response.data.values || response.data.values.length < 2) {
+        elizaLogger.log('No approvals to check');
+        return;
+      }
+
+      const headers = response.data.values[0];
+      const approvalIdIndex = headers.indexOf('approval_id');
+      const statusIndex = headers.indexOf('status');
+      const contentIndex = headers.indexOf('content');
+      const modifiedContentIndex = headers.indexOf('modified_content');
+      const reasonIndex = headers.indexOf('reason');
+      const timestampIndex = headers.indexOf('timestamp');
+
+      // Process each row
+      for (const row of response.data.values.slice(1)) {
+        const approvalId = row[approvalIdIndex];
+        const status = (row[statusIndex] || '').toLowerCase();
+        const timestamp = new Date(row[timestampIndex]).getTime();
+
+        // Skip if not pending or too old (>24h)
+        if (status !== 'pending' || Date.now() - timestamp > 24 * 60 * 60 * 1000) {
+          continue;
+        }
+
+        elizaLogger.log(`Processing approval ${approvalId} with status ${status}`);
+
+        if (status === 'approved' || status === 'rejected') {
+          // Process the approval/rejection
+          await this.handleApprovalResponse(
+            approvalId,
+            status === 'approved',
+            row[modifiedContentIndex] || row[contentIndex],
+            row[reasonIndex]
+          );
+
+          elizaLogger.log(`Processed ${status} for approval ${approvalId}`);
+        }
+      }
+
+      elizaLogger.log('Finished checking pending approvals');
+
+    } catch (error) {
+      elizaLogger.error('Error checking pending approvals:', error);
+      throw error;
+    }
+  }
+
+  // Add this method to handle successful tweet posting
+  async moveToPostsSheet(tweetData) {
+    try {
+      elizaLogger.log('Moving approved tweet to Posts sheet:', tweetData.id);
+      
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.posts,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[
+            tweetData.id,                    // tweet_id
+            tweetData.text,                  // content
+            JSON.stringify(tweetData.media_urls || []), // media_urls
+            new Date().toISOString(),        // timestamp
+            tweetData.permanentUrl,          // permanent_url
+            tweetData.inReplyToStatusId || '', // in_reply_to_id
+            tweetData.conversationId || '',   // conversation_id
+            tweetData.approvalId || '',      // approval_id
+            tweetData.agent_name,            // agent_name
+            tweetData.agent_username,        // agent_username
+            'posted'                         // status
+          ]]
+        }
+      });
+
+      elizaLogger.log('Successfully moved tweet to Posts sheet:', tweetData.id);
+    } catch (error) {
+      elizaLogger.error('Error moving tweet to Posts sheet:', error);
+      throw error;
+    }
+  }
+
+  // Add this method to handle successful interaction posting
+  async moveToInteractionsSheet(interactionData) {
+    try {
+      elizaLogger.log('Moving approved interaction to Interactions sheet:', interactionData.tweet_id);
+      
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.interactions,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[
+            interactionData.type,              // type
+            interactionData.tweet_id,          // tweet_id
+            interactionData.content,           // content
+            interactionData.author_username,   // author_username
+            interactionData.author_name,       // author_name
+            new Date().toISOString(),          // timestamp
+            interactionData.permanent_url,     // permanent_url
+            interactionData.in_reply_to_id,    // in_reply_to_id
+            interactionData.conversation_id,   // conversation_id
+            interactionData.agent_response,    // agent_response
+            interactionData.response_tweet_id, // response_tweet_id
+            interactionData.agent_name,        // agent_name
+            interactionData.agent_username,    // agent_username
+            JSON.stringify(interactionData.context || {}) // context
+          ]]
+        }
+      });
+
+      elizaLogger.log('Successfully moved interaction to Interactions sheet:', interactionData.tweet_id);
+    } catch (error) {
+      elizaLogger.error('Error moving interaction to Interactions sheet:', error);
+      throw error;
     }
   }
 } 

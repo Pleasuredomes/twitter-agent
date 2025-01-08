@@ -1707,16 +1707,58 @@ var TwitterManager = class {
 };
 var TwitterClientInterface = {
   async start(runtime) {
-    await validateTwitterConfig(runtime);
-    elizaLogger5.log("Twitter client started");
-    const manager = new TwitterManager(runtime);
-    await manager.client.init();
-    await manager.post.start();
-    await manager.interaction.start();
-    return manager;
+    try {
+      // Step 1: Validate configuration
+      elizaLogger5.log("Starting Twitter client initialization...");
+      await validateTwitterConfig(runtime);
+      elizaLogger5.log("Twitter configuration validated");
+
+      // Step 2: Create manager and initialize components
+      const manager = new TwitterManager(runtime);
+      elizaLogger5.log("Twitter manager created");
+
+      // Step 3: Initialize base client (handles Twitter connection)
+      await manager.client.init();
+      elizaLogger5.log("Twitter client initialized and logged in");
+
+      // Step 4: Start post generation with immediate first post
+      elizaLogger5.log("Starting tweet generation service...");
+      await manager.post.start(true); // true = generate first tweet immediately
+      elizaLogger5.log("Tweet generation service started");
+
+      // Step 5: Start interaction monitoring
+      elizaLogger5.log("Starting interaction monitoring service...");
+      await manager.interaction.start();
+      elizaLogger5.log("Interaction monitoring service started");
+
+      // Step 6: Start periodic cleanup
+      const cleanupInterval = 30 * 60 * 1000; // 30 minutes
+      setInterval(() => {
+        manager.post.webhookHandler.cleanup()
+          .catch(err => elizaLogger5.error("Error in cleanup:", err));
+      }, cleanupInterval);
+      elizaLogger5.log("Periodic cleanup scheduled");
+
+      // Step 7: Set up status checking interval for approvals
+      const checkInterval = 5 * 60 * 1000; // 5 minutes
+      setInterval(() => {
+        manager.post.webhookHandler.checkPendingApprovals()
+          .catch(err => elizaLogger5.error("Error checking approvals:", err));
+      }, checkInterval);
+      elizaLogger5.log("Approval checking scheduled");
+
+      elizaLogger5.log("Twitter client fully initialized and running");
+      return manager;
+
+    } catch (error) {
+      elizaLogger5.error("Failed to start Twitter client:", error);
+      throw error;
+    }
   },
+
   async stop(runtime) {
-    elizaLogger5.warn("Twitter client does not support stopping yet");
+    elizaLogger5.warn("Stopping Twitter client...");
+    // Add cleanup code here if needed
   }
 };
 var src_default = TwitterClientInterface;
