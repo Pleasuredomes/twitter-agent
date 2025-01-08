@@ -283,163 +283,194 @@ export class WebhookHandler {
   // Handle an approval response from Google Sheets
   async handleApprovalResponse(approvalId, approved, modifiedContent = null, reason = '') {
     try {
-      elizaLogger.log('Handling approval response:', {
-        approvalId,
-        approved,
-        hasModifiedContent: !!modifiedContent,
-        reason
-      });
-
-      // Get the pending approval data
-      const pending = this.pendingApprovals.get(approvalId);
-      if (!pending) {
-        // Try to get from cache
-        const cached = await this.runtime.cacheManager.get(`pending_approvals/${approvalId}`);
-        if (!cached) {
-          elizaLogger.error(`No pending approval found for ID: ${approvalId}`);
-          return;
-        }
-        // Restore from cache to pending queue
-        this.pendingApprovals.set(approvalId, cached);
-      }
-
-      // Update status in Google Sheets
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: this.sheetsConfig.spreadsheetId,
-        range: this.sheetsConfig.ranges.approvals
-      });
-
-      const rows = response.data.values || [];
-      const headers = rows[0] || [];
-      const approvalIdIndex = headers.indexOf('approval_id');
-      const rowIndex = rows.findIndex(row => row[approvalIdIndex] === approvalId);
-
-      if (rowIndex !== -1) {
-        const updateData = [
-          approvalId,
-          pending?.payload?.content_type,
-          pending?.payload?.content,
-          modifiedContent || '',
-          pending?.payload?.context,
-          pending?.payload?.agent_name,
-          pending?.payload?.agent_username,
-          approved ? 'approved' : 'rejected',
-          pending?.payload?.timestamp,
-          new Date().toISOString(), // review_timestamp
-          '', // reviewer (could be added as a parameter if needed)
-          reason || '',
-          '' // tweet_id (will be updated after posting)
-        ];
-
-        await this.sheets.spreadsheets.values.update({
-          spreadsheetId: this.sheetsConfig.spreadsheetId,
-          range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!A${rowIndex + 1}`,
-          valueInputOption: 'RAW',
-          requestBody: {
-            values: [updateData]
-          }
+        elizaLogger.log("🔄 Processing approval response:", {
+            approvalId,
+            approved,
+            hasModifiedContent: !!modifiedContent,
+            reason
         });
 
-        // If approved, post to Twitter and update appropriate sheet
-        if (approved) {
-          try {
-            elizaLogger.log('Posting approved content to Twitter...');
-            
-            const finalContent = modifiedContent || pending?.payload?.content;
-            const contentType = pending?.payload?.content_type;
-            const context = pending?.payload?.context;
+        // Get the memory associated with this approval
+        elizaLogger.log("🔍 Looking up memory for approval...");
+        const memories = await this.runtime.messageManager.getMemoriesByQuery({
+            agentId: this.runtime.agentId,
+            query: {
+                'content.approvalId': approvalId
+            }
+        });
 
-            // Post to Twitter
-            const tweetResult = await this.runtime.emit('content_approved', {
-              type: contentType,
-              content: finalContent,
-              context: context,
-              approvalId
+        if (!memories || memories.length === 0) {
+            elizaLogger.error('❌ No memory found for approval:', approvalId);
+            return;
+        }
+
+        const memory = memories[0];
+        elizaLogger.log("✅ Found memory:", {
+            id: memory.id,
+            content: memory.content,
+            roomId: memory.roomId
+        });
+
+        if (approved) {
+            // Send the approved tweet to Twitter
+            const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || memory.content.text;
+            
+            elizaLogger.log("📝 Preparing to post tweet:", {
+                content: tweetContent,
+                inReplyTo: memory.content.inReplyTo,
+                length: tweetContent.length
             });
 
-            if (tweetResult?.tweet_id) {
-              // Update the tweet_id in the approvals sheet
-              await this.sheets.spreadsheets.values.update({
-                spreadsheetId: this.sheetsConfig.spreadsheetId,
-                range: `${this.sheetsConfig.ranges.approvals.split('!')[0]}!M${rowIndex + 1}`, // Column M is tweet_id
-                valueInputOption: 'RAW',
-                requestBody: {
-                  values: [[tweetResult.tweet_id]]
+            try {
+                // Get Twitter client from runtime's clients
+                const twitterClient = this.runtime.clients?.find(client => client.post)?.client?.twitterClient;
+                
+                if (!twitterClient) {
+                    throw new Error('Twitter client not found in runtime');
                 }
-              });
 
-              // Move to appropriate sheet based on content type
-              const tweetData = {
-                id: tweetResult.tweet_id,
-                text: finalContent,
-                media_urls: tweetResult.media_urls || [],
-                permanentUrl: `https://twitter.com/${pending?.payload?.agent_username}/status/${tweetResult.tweet_id}`,
-                inReplyToStatusId: context?.inReplyTo,
-                conversationId: context?.conversationId,
-                approvalId,
-                agent_name: pending?.payload?.agent_name,
-                agent_username: pending?.payload?.agent_username
-              };
+                elizaLogger.log("🔄 Making Twitter API call...");
+                const result = await twitterClient.sendTweet(
+                    tweetContent,
+                    memory.content.inReplyTo
+                );
+                elizaLogger.log("✅ Twitter API response:", result);
 
-              if (contentType === 'post') {
-                await this.moveToPostsSheet(tweetData);
-              } else {
-                const interactionData = {
-                  type: contentType,
-                  tweet_id: tweetResult.tweet_id,
-                  content: finalContent,
-                  author_username: context?.author_username,
-                  author_name: context?.author_name,
-                  permanent_url: tweetData.permanentUrl,
-                  in_reply_to_id: context?.inReplyTo,
-                  conversation_id: context?.conversationId,
-                  agent_response: finalContent,
-                  response_tweet_id: tweetResult.tweet_id,
-                  agent_name: pending?.payload?.agent_name,
-                  agent_username: pending?.payload?.agent_username,
-                  context: context
-                };
-                await this.moveToInteractionsSheet(interactionData);
-              }
+                // Update memory with sent status and Twitter response
+                elizaLogger.log("💾 Updating memory with success status...");
+                await this.runtime.messageManager.updateMemory({
+                    ...memory,
+                    content: {
+                        ...memory.content,
+                        status: 'sent',
+                        twitterResponse: result,
+                        modifiedText: tweetContent !== memory.content.text ? tweetContent : undefined
+                    }
+                });
 
-              elizaLogger.log('Successfully posted to Twitter and updated sheets:', tweetResult.tweet_id);
+                // Update Google Sheet with success status
+                await this.updateApprovalStatus(approvalId, 'sent', result.id);
+
+                elizaLogger.log('✅ Successfully sent approved tweet:', {
+                    approvalId,
+                    tweetId: result.id,
+                    text: tweetContent
+                });
+            } catch (error) {
+                elizaLogger.error('❌ Error sending tweet to Twitter:', {
+                    error: {
+                        name: error.name,
+                        message: error.message,
+                        stack: error.stack,
+                        code: error.code,
+                        response: error.response?.data,
+                        status: error.response?.status
+                    },
+                    tweet: {
+                        content: tweetContent,
+                        length: tweetContent.length,
+                        inReplyTo: memory.content.inReplyTo
+                    },
+                    client: {
+                        found: !!this.runtime.clients?.find(client => client.post),
+                        hasTwitterClient: !!this.runtime.clients?.find(client => client.post)?.client?.twitterClient
+                    }
+                });
+                
+                // Update memory with error status
+                elizaLogger.log("💾 Updating memory with error status...");
+                await this.runtime.messageManager.updateMemory({
+                    ...memory,
+                    content: {
+                        ...memory.content,
+                        status: 'error',
+                        error: {
+                            message: error.message,
+                            code: error.code,
+                            response: error.response?.data
+                        }
+                    }
+                });
+
+                // Update Google Sheet with error status
+                await this.updateApprovalStatus(approvalId, 'error', '', error.message);
+
+                throw error;
             }
-          } catch (error) {
-            elizaLogger.error('Error posting approved content to Twitter:', error);
-            throw error;
-          }
+        } else {
+            // Update memory with rejected status
+            elizaLogger.log("💾 Updating memory with rejected status...");
+            await this.runtime.messageManager.updateMemory({
+                ...memory,
+                content: {
+                    ...memory.content,
+                    status: 'rejected',
+                    reason
+                }
+            });
+
+            // Update Google Sheet with rejected status
+            await this.updateApprovalStatus(approvalId, 'rejected', '', reason);
+
+            elizaLogger.log('ℹ️ Tweet rejected:', {
+                approvalId,
+                reason
+            });
         }
-      }
-
-      // Update status in cache
-      await this.runtime.cacheManager.set(
-        `pending_approvals/${approvalId}`,
-        {
-          ...pending,
-          status: approved ? 'approved' : 'rejected',
-          result: {
-            approved,
-            modifiedContent: modifiedContent || (pending?.payload?.content),
-            reason,
-            approvalId
-          }
-        }
-      );
-
-      // Remove from pending queue
-      this.pendingApprovals.delete(approvalId);
-
-      elizaLogger.log(`Successfully processed ${approved ? 'approval' : 'rejection'} for ID: ${approvalId}`);
-      return {
-        approved,
-        modifiedContent: modifiedContent || (pending?.payload?.content),
-        reason,
-        approvalId
-      };
-
     } catch (error) {
-      elizaLogger.error('Error handling approval response:', error);
-      throw error;
+        elizaLogger.error('❌ Error in approval response handler:', {
+            error: {
+                name: error.name,
+                message: error.message,
+                stack: error.stack
+            },
+            context: {
+                approvalId,
+                approved,
+                hasModifiedContent: !!modifiedContent
+            }
+        });
+        throw error;
+    }
+  }
+
+  // Helper method to update approval status in Google Sheet
+  async updateApprovalStatus(approvalId, status, tweetId = '', reason = '') {
+    try {
+        const response = await this.sheets.spreadsheets.values.get({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals
+        });
+
+        if (!response.data.values) return;
+
+        const headers = response.data.values[0];
+        const approvalIdCol = headers.indexOf('approval_id');
+        const statusCol = headers.indexOf('status');
+        const tweetIdCol = headers.indexOf('tweet_id');
+        const reasonCol = headers.indexOf('reason');
+        const reviewTimestampCol = headers.indexOf('review_timestamp');
+
+        const rowIndex = response.data.values.findIndex(row => row[approvalIdCol] === approvalId);
+        if (rowIndex === -1) return;
+
+        const range = `${this.sheetsConfig.ranges.approvals.split('!')[0]}!A${rowIndex + 1}:Z${rowIndex + 1}`;
+        const row = response.data.values[rowIndex];
+        row[statusCol] = status;
+        row[tweetIdCol] = tweetId;
+        row[reasonCol] = reason;
+        row[reviewTimestampCol] = new Date().toISOString();
+
+        await this.sheets.spreadsheets.values.update({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range,
+            valueInputOption: 'RAW',
+            requestBody: {
+                values: [row]
+            }
+        });
+    } catch (error) {
+        elizaLogger.error('❌ Error updating approval status in sheet:', error);
     }
   }
 

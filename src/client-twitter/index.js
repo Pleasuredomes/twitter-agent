@@ -121,16 +121,37 @@ var TwitterPostClient = class {
 
       // Prepare prompt context
       elizaLogger.log("🎯 Preparing tweet generation prompt");
-      const prompt = await this.prepareTweetPrompt();
+      const state = await this.runtime.composeState(
+        {
+          userId: this.runtime.agentId,
+          roomId: stringToUuid("twitter_generate_room"),
+          agentId: this.runtime.agentId,
+          content: {
+            text: "",
+            action: ""
+          }
+        },
+        {
+          twitterUserName: this.client.profile.username,
+          timeline: ""  // We'll add timeline later if needed
+        }
+      );
+
+      const context = composeContext({
+        state,
+        template: this.runtime.character.templates?.twitterPostTemplate || twitterPostTemplate
+      });
+
       elizaLogger.log("✅ Prompt prepared, calling OpenAI...");
 
-      // Make OpenAI call
+      // Make OpenAI call using generateText
       elizaLogger.log("🔄 Making OpenAI API call for tweet generation...");
-      const response = await this.runtime.generate({
-        type: "tweet",
-        maxLength: 280,
-        prompt
+      const response = await generateText({
+        runtime: this.runtime,
+        context,
+        modelClass: ModelClass.SMALL
       });
+
       elizaLogger.log("✅ Received OpenAI response:", {
         responseLength: response?.length || 0,
         response: response?.substring(0, 50) + "..." // Log first 50 chars
@@ -142,7 +163,7 @@ var TwitterPostClient = class {
 
       // Process tweet
       elizaLogger.log("📝 Processing generated tweet...");
-      const tweet = this.processTweetResponse(response);
+      const tweet = truncateToCompleteSentence(response.trim());
       elizaLogger.log("✅ Tweet processed:", {
         length: tweet.length,
         content: tweet
