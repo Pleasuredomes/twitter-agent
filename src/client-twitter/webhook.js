@@ -166,29 +166,37 @@ export class WebhookHandler {
   // Queue tweet for approval
   async queueForApproval(content, type, context = {}) {
     try {
-        // For mentions, check if we already have a pending approval for this tweet_id
+        // For mentions, check if we already have a pending approval or have already replied
         if (type === 'mention') {
             const tweetId = context.tweet_id;
             if (tweetId) {
-                // Check existing approvals in the sheet
-                const response = await this.sheets.spreadsheets.values.get({
+                // Check existing approvals in the approvals sheet
+                const approvalsResponse = await this.sheets.spreadsheets.values.get({
                     spreadsheetId: this.sheetsConfig.spreadsheetId,
                     range: this.sheetsConfig.ranges.approvals
                 });
 
-                if (response.data.values) {
-                    const headers = response.data.values[0];
+                // Check existing interactions in the interactions sheet
+                const interactionsResponse = await this.sheets.spreadsheets.values.get({
+                    spreadsheetId: this.sheetsConfig.spreadsheetId,
+                    range: this.sheetsConfig.ranges.interactions
+                });
+
+                let shouldSkip = false;
+
+                // Check approvals sheet for pending or approved entries
+                if (approvalsResponse.data.values) {
+                    const headers = approvalsResponse.data.values[0];
                     const contextIndex = headers.indexOf('context');
                     const statusIndex = headers.indexOf('status');
                     
-                    // Look for any existing approval for this tweet_id
-                    const existingApproval = response.data.values.slice(1).find(row => {
+                    const existingApproval = approvalsResponse.data.values.slice(1).find(row => {
                         if (!row[contextIndex]) return false;
                         try {
                             const rowContext = JSON.parse(row[contextIndex]);
                             const rowStatus = row[statusIndex]?.toLowerCase();
                             return rowContext.tweet_id === tweetId && 
-                                   (rowStatus === 'pending' || rowStatus === 'approved');
+                                   (rowStatus === 'pending' || rowStatus === 'approved' || rowStatus === 'sent');
                         } catch (e) {
                             return false;
                         }
@@ -196,8 +204,28 @@ export class WebhookHandler {
 
                     if (existingApproval) {
                         elizaLogger.log('Skipping duplicate mention approval for tweet:', tweetId);
-                        return null;
+                        shouldSkip = true;
                     }
+                }
+
+                // Check interactions sheet for existing replies
+                if (!shouldSkip && interactionsResponse.data.values) {
+                    const headers = interactionsResponse.data.values[0];
+                    const tweetIdIndex = headers.indexOf('tweet_id');
+                    const responseIdIndex = headers.indexOf('response_tweet_id');
+                    
+                    const existingInteraction = interactionsResponse.data.values.slice(1).find(row => {
+                        return row[tweetIdIndex] === tweetId && row[responseIdIndex]; // If we have a response_tweet_id, we've replied
+                    });
+
+                    if (existingInteraction) {
+                        elizaLogger.log('Skipping mention - already replied to tweet:', tweetId);
+                        shouldSkip = true;
+                    }
+                }
+
+                if (shouldSkip) {
+                    return null;
                 }
             }
         }
