@@ -349,24 +349,23 @@ export class WebhookHandler {
                 while (!postResult && retryCount < maxRetries) {
                     try {
                         // Get the Twitter client from the post client
-                        const twitterPostClient = this.runtime.clients?.find(client => client.post);
-                        if (!twitterPostClient) {
-                            throw new Error('Twitter post client not found');
+                        const twitterClient = this.runtime.clients?.find(client => client.post)?.client?.twitterClient;
+                        if (!twitterClient) {
+                            throw new Error('Twitter client not found');
                         }
 
                         elizaLogger.log("📝 Twitter client structure:", {
-                            hasPost: !!twitterPostClient.post,
-                            hasClient: !!twitterPostClient.client,
-                            clientMethods: Object.keys(twitterPostClient.client || {})
+                            hasClient: !!twitterClient,
+                            clientMethods: Object.keys(twitterClient || {})
                         });
 
-                        // Use sendTweet from the client's twitterClient
-                        postResult = await twitterPostClient.client.sendTweet(
+                        // Use sendTweet method that was working previously
+                        postResult = await twitterClient.sendTweet(
                             tweetContent,
-                            pendingApproval.payload.content_type !== 'post' ? contextData?.tweet_id : undefined
+                            pendingApproval.payload.context?.inReplyTo
                         );
 
-                        // Extract the tweet ID from the response
+                        // Extract the tweet ID from the response if needed
                         if (!postResult.id) {
                             postResult = {
                                 id: postResult.tweet_id || postResult.data?.id,
