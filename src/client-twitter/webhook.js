@@ -72,21 +72,6 @@ export class WebhookHandler {
     this.logToConsole = logToConsole;
     this.runtime = runtime;
     this.pendingApprovals = new Map();
-
-    // Update rate limiting properties with more conservative values
-    this.sheetsRateLimit = {
-      lastRequest: 0,
-      minDelay: 2000,        // Increase minimum delay to 2 seconds between requests
-      backoffDelay: 2000,    // Start with 2 second backoff
-      maxBackoff: 300000,    // Maximum backoff of 5 minutes
-      consecutiveErrors: 0,
-      quotaWindow: {         // Add quota window tracking
-        startTime: Date.now(),
-        requestCount: 0,
-        maxRequests: 50,     // Maximum requests per minute
-        windowSize: 60000    // 1 minute window
-      }
-    };
   }
 
   async initGoogleSheets() {
@@ -181,41 +166,29 @@ export class WebhookHandler {
   // Queue tweet for approval
   async queueForApproval(content, type, context = {}) {
     try {
-        // For mentions, check if we already have a pending approval or have already replied
+        // For mentions, check if we already have a pending approval for this tweet_id
         if (type === 'mention') {
             const tweetId = context.tweet_id;
             if (tweetId) {
-                // Check existing approvals in the approvals sheet with rate limiting
-                const approvalsResponse = await this.rateLimitedSheetsOperation(async () => {
-                    return this.sheets.spreadsheets.values.get({
-                        spreadsheetId: this.sheetsConfig.spreadsheetId,
-                        range: this.sheetsConfig.ranges.approvals
-                    });
+                // Check existing approvals in the sheet
+                const response = await this.sheets.spreadsheets.values.get({
+                    spreadsheetId: this.sheetsConfig.spreadsheetId,
+                    range: this.sheetsConfig.ranges.approvals
                 });
 
-                // Check existing interactions in the interactions sheet with rate limiting
-                const interactionsResponse = await this.rateLimitedSheetsOperation(async () => {
-                    return this.sheets.spreadsheets.values.get({
-                        spreadsheetId: this.sheetsConfig.spreadsheetId,
-                        range: this.sheetsConfig.ranges.interactions
-                    });
-                });
-
-                let shouldSkip = false;
-
-                // Check approvals sheet for pending or approved entries
-                if (approvalsResponse.data.values) {
-                    const headers = approvalsResponse.data.values[0];
+                if (response.data.values) {
+                    const headers = response.data.values[0];
                     const contextIndex = headers.indexOf('context');
                     const statusIndex = headers.indexOf('status');
                     
-                    const existingApproval = approvalsResponse.data.values.slice(1).find(row => {
+                    // Look for any existing approval for this tweet_id
+                    const existingApproval = response.data.values.slice(1).find(row => {
                         if (!row[contextIndex]) return false;
                         try {
                             const rowContext = JSON.parse(row[contextIndex]);
                             const rowStatus = row[statusIndex]?.toLowerCase();
                             return rowContext.tweet_id === tweetId && 
-                                   (rowStatus === 'pending' || rowStatus === 'approved' || rowStatus === 'sent');
+                                   (rowStatus === 'pending' || rowStatus === 'approved');
                         } catch (e) {
                             return false;
                         }
@@ -223,28 +196,8 @@ export class WebhookHandler {
 
                     if (existingApproval) {
                         elizaLogger.log('Skipping duplicate mention approval for tweet:', tweetId);
-                        shouldSkip = true;
+                        return null;
                     }
-                }
-
-                // Check interactions sheet for existing replies
-                if (!shouldSkip && interactionsResponse.data.values) {
-                    const headers = interactionsResponse.data.values[0];
-                    const tweetIdIndex = headers.indexOf('tweet_id');
-                    const responseIdIndex = headers.indexOf('response_tweet_id');
-                    
-                    const existingInteraction = interactionsResponse.data.values.slice(1).find(row => {
-                        return row[tweetIdIndex] === tweetId && row[responseIdIndex]; // If we have a response_tweet_id, we've replied
-                    });
-
-                    if (existingInteraction) {
-                        elizaLogger.log('Skipping mention - already replied to tweet:', tweetId);
-                        shouldSkip = true;
-                    }
-                }
-
-                if (shouldSkip) {
-                    return null;
                 }
             }
         }
@@ -287,54 +240,48 @@ export class WebhookHandler {
             tweet_id: ''
         };
 
-        // Check if headers exist with rate limiting
-        const response = await this.rateLimitedSheetsOperation(async () => {
-            return this.sheets.spreadsheets.values.get({
-                spreadsheetId: this.sheetsConfig.spreadsheetId,
-                range: this.sheetsConfig.ranges.approvals.split('!')[0] + '!A1:1'
-            });
+        // Check if headers exist, if not add them
+        const response = await this.sheets.spreadsheets.values.get({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals.split('!')[0] + '!A1:1'
         });
 
         if (!response.data.values || response.data.values.length === 0) {
-            // Add headers with rate limiting
-            await this.rateLimitedSheetsOperation(async () => {
-                return this.sheets.spreadsheets.values.append({
-                    spreadsheetId: this.sheetsConfig.spreadsheetId,
-                    range: this.sheetsConfig.ranges.approvals,
-                    valueInputOption: 'RAW',
-                    insertDataOption: 'INSERT_ROWS',
-                    requestBody: {
-                        values: [this.sheetsConfig.headers.approvals]
-                    }
-                });
-            });
-        }
-
-        // Add to Google Sheets with rate limiting
-        await this.rateLimitedSheetsOperation(async () => {
-            return this.sheets.spreadsheets.values.append({
+            // Add headers first
+            await this.sheets.spreadsheets.values.append({
                 spreadsheetId: this.sheetsConfig.spreadsheetId,
                 range: this.sheetsConfig.ranges.approvals,
                 valueInputOption: 'RAW',
                 insertDataOption: 'INSERT_ROWS',
                 requestBody: {
-                    values: [[
-                        approvalData.approval_id,
-                        approvalData.content_type,
-                        approvalData.content,
-                        approvalData.modified_content,
-                        approvalData.context,
-                        approvalData.agent_name,
-                        approvalData.agent_username,
-                        approvalData.status,
-                        approvalData.timestamp,
-                        approvalData.review_timestamp,
-                        approvalData.reviewer,
-                        approvalData.reason,
-                        approvalData.tweet_id
-                    ]]
+                    values: [this.sheetsConfig.headers.approvals]
                 }
             });
+        }
+
+        // Add to Google Sheets
+        await this.sheets.spreadsheets.values.append({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals,
+            valueInputOption: 'RAW',
+            insertDataOption: 'INSERT_ROWS',
+            requestBody: {
+                values: [[
+                    approvalData.approval_id,
+                    approvalData.content_type,
+                    approvalData.content,
+                    approvalData.modified_content,
+                    approvalData.context,
+                    approvalData.agent_name,
+                    approvalData.agent_username,
+                    approvalData.status,
+                    approvalData.timestamp,
+                    approvalData.review_timestamp,
+                    approvalData.reviewer,
+                    approvalData.reason,
+                    approvalData.tweet_id
+                ]]
+            }
         });
 
         // Store in pending queue
@@ -807,94 +754,6 @@ export class WebhookHandler {
     }
   }
 
-  // Update rate limiting helper method with quota window
-  async rateLimitedSheetsOperation(operation) {
-    const now = Date.now();
-    
-    // Check and update quota window
-    if (now - this.sheetsRateLimit.quotaWindow.startTime > this.sheetsRateLimit.quotaWindow.windowSize) {
-      // Reset window if it's expired
-      this.sheetsRateLimit.quotaWindow = {
-        startTime: now,
-        requestCount: 0,
-        maxRequests: 50,
-        windowSize: 60000
-      };
-    } else if (this.sheetsRateLimit.quotaWindow.requestCount >= this.sheetsRateLimit.quotaWindow.maxRequests) {
-      // Wait for the current window to expire if we've hit the quota
-      const waitTime = (this.sheetsRateLimit.quotaWindow.startTime + this.sheetsRateLimit.quotaWindow.windowSize) - now;
-      elizaLogger.warn(`Quota window full, waiting ${waitTime/1000} seconds for reset...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      // Reset window
-      this.sheetsRateLimit.quotaWindow = {
-        startTime: Date.now(),
-        requestCount: 0,
-        maxRequests: 50,
-        windowSize: 60000
-      };
-    }
-    
-    // Ensure minimum delay between requests
-    const timeSinceLastRequest = now - this.sheetsRateLimit.lastRequest;
-    if (timeSinceLastRequest < this.sheetsRateLimit.minDelay) {
-      await new Promise(resolve => setTimeout(resolve, this.sheetsRateLimit.minDelay - timeSinceLastRequest));
-    }
-
-    try {
-      // Increment request count before making request
-      this.sheetsRateLimit.quotaWindow.requestCount++;
-      
-      // Attempt the operation
-      const result = await operation();
-      
-      // Reset backoff on success
-      this.sheetsRateLimit.consecutiveErrors = 0;
-      this.sheetsRateLimit.backoffDelay = 2000; // Reset to initial 2 second delay
-      this.sheetsRateLimit.lastRequest = Date.now();
-      
-      return result;
-    } catch (error) {
-      if (error.message?.includes('Quota exceeded')) {
-        // Increment consecutive errors and increase backoff
-        this.sheetsRateLimit.consecutiveErrors++;
-        this.sheetsRateLimit.backoffDelay = Math.min(
-          this.sheetsRateLimit.backoffDelay * 2,
-          this.sheetsRateLimit.maxBackoff
-        );
-
-        elizaLogger.warn(`Google Sheets quota exceeded, backing off for ${this.sheetsRateLimit.backoffDelay/1000} seconds...`);
-        await new Promise(resolve => setTimeout(resolve, this.sheetsRateLimit.backoffDelay));
-
-        // Reset quota window after backoff
-        this.sheetsRateLimit.quotaWindow = {
-          startTime: Date.now(),
-          requestCount: 0,
-          maxRequests: 50,
-          windowSize: 60000
-        };
-
-        // Retry the operation
-        return this.rateLimitedSheetsOperation(operation);
-      }
-      throw error;
-    }
-  }
-
-  // Add batch helper method
-  async batchSheetsOperation(ranges) {
-    try {
-      return await this.rateLimitedSheetsOperation(async () => {
-        return this.sheets.spreadsheets.values.batchGet({
-          spreadsheetId: this.sheetsConfig.spreadsheetId,
-          ranges: ranges
-        });
-      });
-    } catch (error) {
-      elizaLogger.error('Error in batch sheets operation:', error);
-      throw error;
-    }
-  }
-
   async checkPendingApprovals() {
     try {
         elizaLogger.log('Checking pending approvals...');
@@ -907,24 +766,21 @@ export class WebhookHandler {
                 clientCount: this.runtime.clients?.length || 0,
                 clientTypes: this.runtime.clients?.map(c => c.constructor.name) || []
             });
-            return;
+            return; // Exit early and retry on next check
         }
         
-        // Get all needed sheets data in one batch operation
-        const batchResponse = await this.batchSheetsOperation([
-            this.sheetsConfig.ranges.approvals,
-            this.sheetsConfig.ranges.interactions
-        ]);
+        // Get all rows from approvals sheet
+        const response = await this.sheets.spreadsheets.values.get({
+            spreadsheetId: this.sheetsConfig.spreadsheetId,
+            range: this.sheetsConfig.ranges.approvals
+        });
 
-        if (!batchResponse.data.valueRanges[0].values || batchResponse.data.valueRanges[0].values.length < 2) {
+        if (!response.data.values || response.data.values.length < 2) {
             elizaLogger.log('No approvals to check');
             return;
         }
 
-        const approvalsData = batchResponse.data.valueRanges[0].values;
-        const interactionsData = batchResponse.data.valueRanges[1].values || [];
-
-        const headers = approvalsData[0];
+        const headers = response.data.values[0];
         const approvalIdIndex = headers.indexOf('approval_id');
         const statusIndex = headers.indexOf('status');
         const contentIndex = headers.indexOf('content');
@@ -934,22 +790,8 @@ export class WebhookHandler {
         const contentTypeIndex = headers.indexOf('content_type');
         const contextIndex = headers.indexOf('context');
 
-        // Create a map of existing interactions for quick lookup
-        const existingInteractions = new Map();
-        if (interactionsData.length > 0) {
-            const interactionHeaders = interactionsData[0];
-            const tweetIdIndex = interactionHeaders.indexOf('tweet_id');
-            const responseIdIndex = interactionHeaders.indexOf('response_tweet_id');
-            
-            for (const row of interactionsData.slice(1)) {
-                if (row[tweetIdIndex] && row[responseIdIndex]) {
-                    existingInteractions.set(row[tweetIdIndex], row[responseIdIndex]);
-                }
-            }
-        }
-
-        // Process each approval row
-        for (const row of approvalsData.slice(1)) {
+        // Process each row
+        for (const row of response.data.values.slice(1)) {
             const approvalId = row[approvalIdIndex];
             const status = (row[statusIndex] || '').toLowerCase();
             const timestamp = new Date(row[timestampIndex]).getTime();
@@ -959,14 +801,6 @@ export class WebhookHandler {
             // Skip if not pending and not recently approved/rejected
             if (status !== 'approved' && status !== 'rejected') {
                 continue;
-            }
-
-            // For mentions, check if we already have a response
-            if (contentType === 'mention' && context.tweet_id) {
-                if (existingInteractions.has(context.tweet_id)) {
-                    elizaLogger.log(`Skipping mention - already has response for tweet: ${context.tweet_id}`);
-                    continue;
-                }
             }
 
             elizaLogger.log(`Processing ${status} approval ${approvalId}`, {
@@ -1018,28 +852,26 @@ export class WebhookHandler {
     try {
       elizaLogger.log('Moving approved tweet to Posts sheet:', tweetData.id);
       
-      await this.rateLimitedSheetsOperation(async () => {
-        return this.sheets.spreadsheets.values.append({
-          spreadsheetId: this.sheetsConfig.spreadsheetId,
-          range: this.sheetsConfig.ranges.posts,
-          valueInputOption: 'RAW',
-          insertDataOption: 'INSERT_ROWS',
-          requestBody: {
-            values: [[
-              tweetData.id,
-              tweetData.text,
-              JSON.stringify(tweetData.media_urls || []),
-              new Date().toISOString(),
-              tweetData.permanentUrl,
-              tweetData.inReplyToStatusId || '',
-              tweetData.conversationId || '',
-              tweetData.approvalId || '',
-              tweetData.agent_name,
-              tweetData.agent_username,
-              'posted'
-            ]]
-          }
-        });
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.posts,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[
+            tweetData.id,                    // tweet_id
+            tweetData.text,                  // content
+            JSON.stringify(tweetData.media_urls || []), // media_urls
+            new Date().toISOString(),        // timestamp
+            tweetData.permanentUrl,          // permanent_url
+            tweetData.inReplyToStatusId || '', // in_reply_to_id
+            tweetData.conversationId || '',   // conversation_id
+            tweetData.approvalId || '',      // approval_id
+            tweetData.agent_name,            // agent_name
+            tweetData.agent_username,        // agent_username
+            'posted'                         // status
+          ]]
+        }
       });
 
       elizaLogger.log('Successfully moved tweet to Posts sheet:', tweetData.id);
@@ -1054,31 +886,29 @@ export class WebhookHandler {
     try {
       elizaLogger.log('Moving approved interaction to Interactions sheet:', interactionData.tweet_id);
       
-      await this.rateLimitedSheetsOperation(async () => {
-        return this.sheets.spreadsheets.values.append({
-          spreadsheetId: this.sheetsConfig.spreadsheetId,
-          range: this.sheetsConfig.ranges.interactions,
-          valueInputOption: 'RAW',
-          insertDataOption: 'INSERT_ROWS',
-          requestBody: {
-            values: [[
-              interactionData.type,
-              interactionData.tweet_id,
-              interactionData.content,
-              interactionData.author_username,
-              interactionData.author_name,
-              new Date().toISOString(),
-              interactionData.permanent_url,
-              interactionData.in_reply_to_id,
-              interactionData.conversation_id,
-              interactionData.agent_response,
-              interactionData.response_tweet_id,
-              interactionData.agent_name,
-              interactionData.agent_username,
-              JSON.stringify(interactionData.context || {})
-            ]]
-          }
-        });
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId: this.sheetsConfig.spreadsheetId,
+        range: this.sheetsConfig.ranges.interactions,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: {
+          values: [[
+            interactionData.type,              // type
+            interactionData.tweet_id,          // tweet_id
+            interactionData.content,           // content
+            interactionData.author_username,   // author_username
+            interactionData.author_name,       // author_name
+            new Date().toISOString(),          // timestamp
+            interactionData.permanent_url,     // permanent_url
+            interactionData.in_reply_to_id,    // in_reply_to_id
+            interactionData.conversation_id,   // conversation_id
+            interactionData.agent_response,    // agent_response
+            interactionData.response_tweet_id, // response_tweet_id
+            interactionData.agent_name,        // agent_name
+            interactionData.agent_username,    // agent_username
+            JSON.stringify(interactionData.context || {}) // context
+          ]]
+        }
       });
 
       elizaLogger.log('Successfully moved interaction to Interactions sheet:', interactionData.tweet_id);
