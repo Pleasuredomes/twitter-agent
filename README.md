@@ -21,7 +21,7 @@
    - Create a new Google Sheet:
      1. Go to [Google Sheets](https://sheets.google.com)
      2. Create a new spreadsheet
-     3. Create three sheets named: "Posts", "Interactions", and "Approvals"
+     3. Create a sheet named "Approvals"
      4. Share the spreadsheet with the service account email (found in your credentials JSON)
      5. Copy the spreadsheet ID from the URL (the long string between /d/ and /edit)
 
@@ -73,64 +73,31 @@
 
 ## Google Sheets Structure
 
-The spreadsheet should have three sheets:
+The spreadsheet needs one sheet:
 
-1. **Posts Sheet**:
-   ```
-   - tweet_id
-   - content
-   - media_urls
-   - timestamp
-   - permanent_url
-   - in_reply_to_id
-   - conversation_id
-   - approval_id
-   - agent_name
-   - agent_username
-   - status
-   ```
-
-2. **Interactions Sheet**:
-   ```
-   - type (mention, reply, dm, etc)
-   - tweet_id
-   - content
-   - author_username
-   - author_name
-   - timestamp
-   - permanent_url
-   - in_reply_to_id
-   - conversation_id
-   - agent_response
-   - response_tweet_id
-   - agent_name
-   - agent_username
-   - context
-   ```
-
-3. **Approvals Sheet**:
-   ```
-   - approval_id
-   - content_type
-   - content
-   - modified_content
-   - context
-   - agent_name
-   - agent_username
-   - status
-   - timestamp
-   - review_timestamp
-   - reviewer
-   - reason
-   - tweet_id
-   ```
+**Approvals Sheet**:
+```
+- approval_id       # Unique ID for the approval request
+- content_type      # Type of content (post, reply, mention, dm)
+- content          # Original content to be approved
+- modified_content # Modified content after review (if any)
+- context         # Additional context as JSON
+- agent_name      # Name of the agent
+- agent_username  # Username of the agent
+- status         # pending/approved/rejected/sent/error
+- timestamp      # When the request was created
+- review_timestamp # When the content was reviewed
+- reviewer       # Who reviewed the content (optional)
+- reason        # Reason for approval/rejection
+- tweet_id      # ID of the resulting tweet (if approved and posted)
+```
 
 ## Troubleshooting
 
 1. **Google Sheets Issues**:
    - Verify service account has edit access to the spreadsheet
    - Check credentials JSON is properly formatted in .env
-   - Ensure sheet names match exactly: "Posts", "Interactions", "Approvals"
+   - Ensure sheet name matches exactly: "Approvals"
    - Verify spreadsheet ID is correct
 
 2. **Tweet Status Meanings**:

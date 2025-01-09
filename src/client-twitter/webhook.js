@@ -9,40 +9,9 @@ export class WebhookHandler {
       spreadsheetId: process.env.GOOGLE_SHEETS_SPREADSHEET_ID,
       credentials: JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS || '{}'),
       ranges: {
-        posts: 'Posts!A:Z',
-        interactions: 'Interactions!A:Z',
         approvals: 'Approvals!A:Z'
       },
       headers: {
-        posts: [
-          'tweet_id',
-          'content',
-          'media_urls',
-          'timestamp',
-          'permanent_url',
-          'in_reply_to_id',
-          'conversation_id',
-          'approval_id',
-          'agent_name',
-          'agent_username',
-          'status'
-        ],
-        interactions: [
-          'type',              // mention, reply, dm, etc
-          'tweet_id',          // ID of the incoming tweet
-          'content',           // Content of the incoming tweet
-          'author_username',   // Username of the tweet author
-          'author_name',       // Display name of the tweet author
-          'timestamp',         // When the interaction occurred
-          'permanent_url',     // URL to the tweet
-          'in_reply_to_id',    // ID of the tweet being replied to
-          'conversation_id',   // Thread/conversation ID
-          'agent_response',    // Our agent's response if any
-          'response_tweet_id', // ID of our response tweet if any
-          'agent_name',        // Name of our agent
-          'agent_username',    // Username of our agent
-          'context'           // Additional context as JSON
-        ],
         approvals: [
           'approval_id',       // Unique ID for the approval request
           'content_type',      // Type of content (post, reply, mention, dm)
@@ -501,6 +470,8 @@ export class WebhookHandler {
                 // Update Google Sheet with success status
                 await this.updateApprovalStatus(approvalId, 'sent', postResult.id);
 
+                // Comment out the sheet movement code since we're consolidating to approvals sheet
+                /*
                 // Handle different content types
                 if (pendingApproval.payload.content_type === 'post') {
                     // Move to posts sheet if it was a post
@@ -532,6 +503,7 @@ export class WebhookHandler {
                         context: contextData
                     });
                 }
+                */
 
                 elizaLogger.log('✅ Successfully sent approved content:', {
                     approvalId,
@@ -847,6 +819,8 @@ export class WebhookHandler {
     }
   }
 
+  // Comment out unused methods
+  /*
   // Add this method to handle successful tweet posting
   async moveToPostsSheet(tweetData) {
     try {
@@ -917,4 +891,5 @@ export class WebhookHandler {
       throw error;
     }
   }
+  */
 } 
