@@ -4,9 +4,9 @@ import {
   generateText,
   embeddingZeroVector,
   ModelClass,
-  stringToUuid
+  stringToUuid,
+  elizaLogger
 } from "@ai16z/eliza";
-import { elizaLogger } from "@ai16z/eliza";
 import { WebhookHandler } from './webhook.js';
 var twitterPostTemplate = `{{timeline}}
 
@@ -1325,7 +1325,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
     elizaLogger.log("✅ Twitter client initialization complete");
   }
   async fetchHomeTimeline(count) {
-    elizaLogger4.debug("fetching home timeline");
+    elizaLogger.debug("fetching home timeline");
     const homeTimeline = await this.twitterClient.getUserTweets(
       this.profile.id,
       count
@@ -1351,22 +1351,22 @@ var ClientBase = class _ClientBase extends EventEmitter {
         );
         return result ?? { tweets: [] };
       } catch (error) {
-        elizaLogger4.error("Error fetching search tweets:", error);
+        elizaLogger.error("Error fetching search tweets:", error);
         return { tweets: [] };
       }
     } catch (error) {
-      elizaLogger4.error("Error fetching search tweets:", error);
+      elizaLogger.error("Error fetching search tweets:", error);
       return { tweets: [] };
     }
   }
   async populateTimeline() {
-    elizaLogger4.log("🔄 Starting timeline population...");
+    elizaLogger.log("🔄 Starting timeline population...");
     
     // Check cache first
-    elizaLogger4.log("📂 Checking for cached timeline...");
+    elizaLogger.log("📂 Checking for cached timeline...");
     const cachedTimeline = await this.getCachedTimeline();
     if (cachedTimeline) {
-      elizaLogger4.log("✅ Found cached timeline with", cachedTimeline.length, "tweets");
+      elizaLogger.log("✅ Found cached timeline with", cachedTimeline.length, "tweets");
       
       const existingMemories2 = await this.runtime.messageManager.getMemoriesByRoomIds({
         agentId: this.runtime.agentId,
@@ -1376,7 +1376,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
           )
         )
       });
-      elizaLogger4.log("📊 Found", existingMemories2.length, "existing memories");
+      elizaLogger.log("📊 Found", existingMemories2.length, "existing memories");
       
       const existingMemoryIds2 = new Set(
         existingMemories2.map((memory) => memory.id.toString())
@@ -1388,22 +1388,22 @@ var ClientBase = class _ClientBase extends EventEmitter {
       );
       
       if (someCachedTweetsExist) {
-        elizaLogger4.log("🔄 Processing cached tweets...");
+        elizaLogger.log("🔄 Processing cached tweets...");
         const tweetsToSave2 = cachedTimeline.filter(
           (tweet) => !existingMemoryIds2.has(
             stringToUuid4(tweet.id + "-" + this.runtime.agentId)
           )
         );
-        elizaLogger4.log("📝 Need to save", tweetsToSave2.length, "new tweets from cache");
+        elizaLogger.log("📝 Need to save", tweetsToSave2.length, "new tweets from cache");
         
         for (const tweet of tweetsToSave2) {
-          elizaLogger4.log("💾 Saving tweet", tweet.id);
+          elizaLogger.log("💾 Saving tweet", tweet.id);
           const roomId = stringToUuid4(
             tweet.conversationId + "-" + this.runtime.agentId
           );
           const userId = tweet.userId === this.profile.id ? this.runtime.agentId : stringToUuid4(tweet.userId);
           
-          elizaLogger4.log("👤 Ensuring user connections...");
+          elizaLogger.log("👤 Ensuring user connections...");
           if (tweet.userId === this.profile.id) {
             await this.runtime.ensureConnection(
               this.runtime.agentId,
@@ -1431,16 +1431,16 @@ var ClientBase = class _ClientBase extends EventEmitter {
             ) : void 0
           };
           
-          elizaLogger4.log("🔍 Checking for existing memory...");
+          elizaLogger.log("🔍 Checking for existing memory...");
           const memory = await this.runtime.messageManager.getMemoryById(
             stringToUuid4(tweet.id + "-" + this.runtime.agentId)
           );
           if (memory) {
-            elizaLogger4.log("⚠️ Memory already exists, skipping");
+            elizaLogger.log("⚠️ Memory already exists, skipping");
             break;
           }
           
-          elizaLogger4.log("📝 Creating new memory...");
+          elizaLogger.log("📝 Creating new memory...");
           await this.runtime.messageManager.createMemory({
             id: stringToUuid4(tweet.id + "-" + this.runtime.agentId),
             userId,
@@ -1451,30 +1451,30 @@ var ClientBase = class _ClientBase extends EventEmitter {
             createdAt: tweet.timestamp * 1e3
           });
           
-          elizaLogger4.log("💾 Caching tweet...");
+          elizaLogger.log("💾 Caching tweet...");
           await this.cacheTweet(tweet);
         }
-        elizaLogger4.log("✅ Populated", tweetsToSave2.length, "tweets from cache");
+        elizaLogger.log("✅ Populated", tweetsToSave2.length, "tweets from cache");
         return;
       }
     }
 
-    elizaLogger4.log("🔄 Fetching fresh timeline...");
+    elizaLogger.log("🔄 Fetching fresh timeline...");
     const timeline = await this.fetchHomeTimeline(cachedTimeline ? 10 : 50);
-    elizaLogger4.log("✅ Fetched", timeline.length, "timeline tweets");
+    elizaLogger.log("✅ Fetched", timeline.length, "timeline tweets");
 
-    elizaLogger4.log("🔄 Fetching mentions and interactions...");
+    elizaLogger.log("🔄 Fetching mentions and interactions...");
     const mentionsAndInteractions = await this.fetchSearchTweets(
       `@${this.runtime.getSetting("TWITTER_USERNAME")}`,
       20,
       SearchMode2.Latest
     );
-    elizaLogger4.log("✅ Fetched", mentionsAndInteractions.tweets.length, "mentions");
+    elizaLogger.log("✅ Fetched", mentionsAndInteractions.tweets.length, "mentions");
 
     const allTweets = [...timeline, ...mentionsAndInteractions.tweets];
-    elizaLogger4.log("📊 Total tweets to process:", allTweets.length);
+    elizaLogger.log("📊 Total tweets to process:", allTweets.length);
 
-    elizaLogger4.log("🔄 Processing tweets...");
+    elizaLogger.log("🔄 Processing tweets...");
     const tweetIdsToCheck = new Set();
     const roomIds = new Set();
     for (const tweet of allTweets) {
@@ -1484,12 +1484,12 @@ var ClientBase = class _ClientBase extends EventEmitter {
       );
     }
 
-    elizaLogger4.log("🔍 Checking for existing memories...");
+    elizaLogger.log("🔍 Checking for existing memories...");
     const existingMemories = await this.runtime.messageManager.getMemoriesByRoomIds({
       agentId: this.runtime.agentId,
       roomIds: Array.from(roomIds)
     });
-    elizaLogger4.log("📊 Found", existingMemories.length, "existing memories");
+    elizaLogger.log("📊 Found", existingMemories.length, "existing memories");
 
     const existingMemoryIds = new Set(
       existingMemories.map((memory) => memory.id)
@@ -1499,9 +1499,9 @@ var ClientBase = class _ClientBase extends EventEmitter {
         stringToUuid4(tweet.id + "-" + this.runtime.agentId)
       )
     );
-    elizaLogger4.log("📝 Need to save", tweetsToSave.length, "new tweets");
+    elizaLogger.log("📝 Need to save", tweetsToSave.length, "new tweets");
 
-    elizaLogger4.log("👤 Ensuring user exists...");
+    elizaLogger.log("👤 Ensuring user exists...");
     await this.runtime.ensureUserExists(
       this.runtime.agentId,
       this.profile.username,
@@ -1509,15 +1509,15 @@ var ClientBase = class _ClientBase extends EventEmitter {
       "twitter"
     );
 
-    elizaLogger4.log("🔄 Saving new tweets...");
+    elizaLogger.log("🔄 Saving new tweets...");
     for (const tweet of tweetsToSave) {
-      elizaLogger4.log("💾 Processing tweet", tweet.id);
+      elizaLogger.log("💾 Processing tweet", tweet.id);
       const roomId = stringToUuid4(
         tweet.conversationId + "-" + this.runtime.agentId
       );
       const userId = tweet.userId === this.profile.id ? this.runtime.agentId : stringToUuid4(tweet.userId);
       
-      elizaLogger4.log("👤 Ensuring connections...");
+      elizaLogger.log("👤 Ensuring connections...");
       if (tweet.userId === this.profile.id) {
         await this.runtime.ensureConnection(
           this.runtime.agentId,
@@ -1543,7 +1543,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
         inReplyTo: tweet.inReplyToStatusId ? stringToUuid4(tweet.inReplyToStatusId) : void 0
       };
 
-      elizaLogger4.log("📝 Creating memory...");
+      elizaLogger.log("📝 Creating memory...");
       await this.runtime.messageManager.createMemory({
         id: stringToUuid4(tweet.id + "-" + this.runtime.agentId),
         userId,
@@ -1554,15 +1554,15 @@ var ClientBase = class _ClientBase extends EventEmitter {
         createdAt: tweet.timestamp * 1e3
       });
 
-      elizaLogger4.log("💾 Caching tweet...");
+      elizaLogger.log("💾 Caching tweet...");
       await this.cacheTweet(tweet);
     }
 
-    elizaLogger4.log("💾 Updating cache...");
+    elizaLogger.log("💾 Updating cache...");
     await this.cacheTimeline(timeline);
     await this.cacheMentions(mentionsAndInteractions.tweets);
 
-    elizaLogger4.log("✅ Timeline population complete");
+    elizaLogger.log("✅ Timeline population complete");
   }
   async setCookiesFromArray(cookiesArray) {
     const cookieStrings = cookiesArray.map(
@@ -1581,7 +1581,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
         }
       );
       if (recentMessage.length > 0 && recentMessage[0].content === message.content) {
-        elizaLogger4.debug("Message already saved", recentMessage[0].id);
+        elizaLogger.debug("Message already saved", recentMessage[0].id);
       } else {
         await this.runtime.messageManager.createMemory({
           ...message,
@@ -1898,7 +1898,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
     elizaLogger.log("✅ Twitter client initialization complete");
   }
   async fetchHomeTimeline(count) {
-    elizaLogger4.debug("fetching home timeline");
+    elizaLogger.debug("fetching home timeline");
     const homeTimeline = await this.twitterClient.getUserTweets(
       this.profile.id,
       count
@@ -1924,22 +1924,22 @@ var ClientBase = class _ClientBase extends EventEmitter {
         );
         return result ?? { tweets: [] };
       } catch (error) {
-        elizaLogger4.error("Error fetching search tweets:", error);
+        elizaLogger.error("Error fetching search tweets:", error);
         return { tweets: [] };
       }
     } catch (error) {
-      elizaLogger4.error("Error fetching search tweets:", error);
+      elizaLogger.error("Error fetching search tweets:", error);
       return { tweets: [] };
     }
   }
   async populateTimeline() {
-    elizaLogger4.log("🔄 Starting timeline population...");
+    elizaLogger.log("🔄 Starting timeline population...");
     
     // Check cache first
-    elizaLogger4.log("📂 Checking for cached timeline...");
+    elizaLogger.log("📂 Checking for cached timeline...");
     const cachedTimeline = await this.getCachedTimeline();
     if (cachedTimeline) {
-      elizaLogger4.log("✅ Found cached timeline with", cachedTimeline.length, "tweets");
+      elizaLogger.log("✅ Found cached timeline with", cachedTimeline.length, "tweets");
       
       const existingMemories2 = await this.runtime.messageManager.getMemoriesByRoomIds({
         agentId: this.runtime.agentId,
@@ -1949,7 +1949,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
           )
         )
       });
-      elizaLogger4.log("📊 Found", existingMemories2.length, "existing memories");
+      elizaLogger.log("📊 Found", existingMemories2.length, "existing memories");
       
       const existingMemoryIds2 = new Set(
         existingMemories2.map((memory) => memory.id.toString())
@@ -1961,22 +1961,22 @@ var ClientBase = class _ClientBase extends EventEmitter {
       );
       
       if (someCachedTweetsExist) {
-        elizaLogger4.log("🔄 Processing cached tweets...");
+        elizaLogger.log("🔄 Processing cached tweets...");
         const tweetsToSave2 = cachedTimeline.filter(
           (tweet) => !existingMemoryIds2.has(
             stringToUuid4(tweet.id + "-" + this.runtime.agentId)
           )
         );
-        elizaLogger4.log("📝 Need to save", tweetsToSave2.length, "new tweets from cache");
+        elizaLogger.log("📝 Need to save", tweetsToSave2.length, "new tweets from cache");
         
         for (const tweet of tweetsToSave2) {
-          elizaLogger4.log("💾 Saving tweet", tweet.id);
+          elizaLogger.log("💾 Saving tweet", tweet.id);
           const roomId = stringToUuid4(
             tweet.conversationId + "-" + this.runtime.agentId
           );
           const userId = tweet.userId === this.profile.id ? this.runtime.agentId : stringToUuid4(tweet.userId);
           
-          elizaLogger4.log("👤 Ensuring user connections...");
+          elizaLogger.log("👤 Ensuring user connections...");
           if (tweet.userId === this.profile.id) {
             await this.runtime.ensureConnection(
               this.runtime.agentId,
@@ -2004,16 +2004,16 @@ var ClientBase = class _ClientBase extends EventEmitter {
             ) : void 0
           };
           
-          elizaLogger4.log("🔍 Checking for existing memory...");
+          elizaLogger.log("🔍 Checking for existing memory...");
           const memory = await this.runtime.messageManager.getMemoryById(
             stringToUuid4(tweet.id + "-" + this.runtime.agentId)
           );
           if (memory) {
-            elizaLogger4.log("⚠️ Memory already exists, skipping");
+            elizaLogger.log("⚠️ Memory already exists, skipping");
             break;
           }
           
-          elizaLogger4.log("📝 Creating new memory...");
+          elizaLogger.log("📝 Creating new memory...");
           await this.runtime.messageManager.createMemory({
             id: stringToUuid4(tweet.id + "-" + this.runtime.agentId),
             userId,
@@ -2024,30 +2024,30 @@ var ClientBase = class _ClientBase extends EventEmitter {
             createdAt: tweet.timestamp * 1e3
           });
           
-          elizaLogger4.log("💾 Caching tweet...");
+          elizaLogger.log("💾 Caching tweet...");
           await this.cacheTweet(tweet);
         }
-        elizaLogger4.log("✅ Populated", tweetsToSave2.length, "tweets from cache");
+        elizaLogger.log("✅ Populated", tweetsToSave2.length, "tweets from cache");
         return;
       }
     }
 
-    elizaLogger4.log("🔄 Fetching fresh timeline...");
+    elizaLogger.log("🔄 Fetching fresh timeline...");
     const timeline = await this.fetchHomeTimeline(cachedTimeline ? 10 : 50);
-    elizaLogger4.log("✅ Fetched", timeline.length, "timeline tweets");
+    elizaLogger.log("✅ Fetched", timeline.length, "timeline tweets");
 
-    elizaLogger4.log("🔄 Fetching mentions and interactions...");
+    elizaLogger.log("🔄 Fetching mentions and interactions...");
     const mentionsAndInteractions = await this.fetchSearchTweets(
       `@${this.runtime.getSetting("TWITTER_USERNAME")}`,
       20,
       SearchMode2.Latest
     );
-    elizaLogger4.log("✅ Fetched", mentionsAndInteractions.tweets.length, "mentions");
+    elizaLogger.log("✅ Fetched", mentionsAndInteractions.tweets.length, "mentions");
 
     const allTweets = [...timeline, ...mentionsAndInteractions.tweets];
-    elizaLogger4.log("📊 Total tweets to process:", allTweets.length);
+    elizaLogger.log("📊 Total tweets to process:", allTweets.length);
 
-    elizaLogger4.log("🔄 Processing tweets...");
+    elizaLogger.log("🔄 Processing tweets...");
     const tweetIdsToCheck = new Set();
     const roomIds = new Set();
     for (const tweet of allTweets) {
@@ -2057,12 +2057,12 @@ var ClientBase = class _ClientBase extends EventEmitter {
       );
     }
 
-    elizaLogger4.log("🔍 Checking for existing memories...");
+    elizaLogger.log("🔍 Checking for existing memories...");
     const existingMemories = await this.runtime.messageManager.getMemoriesByRoomIds({
       agentId: this.runtime.agentId,
       roomIds: Array.from(roomIds)
     });
-    elizaLogger4.log("📊 Found", existingMemories.length, "existing memories");
+    elizaLogger.log("📊 Found", existingMemories.length, "existing memories");
 
     const existingMemoryIds = new Set(
       existingMemories.map((memory) => memory.id)
@@ -2072,9 +2072,9 @@ var ClientBase = class _ClientBase extends EventEmitter {
         stringToUuid4(tweet.id + "-" + this.runtime.agentId)
       )
     );
-    elizaLogger4.log("📝 Need to save", tweetsToSave.length, "new tweets");
+    elizaLogger.log("📝 Need to save", tweetsToSave.length, "new tweets");
 
-    elizaLogger4.log("👤 Ensuring user exists...");
+    elizaLogger.log("👤 Ensuring user exists...");
     await this.runtime.ensureUserExists(
       this.runtime.agentId,
       this.profile.username,
@@ -2082,15 +2082,15 @@ var ClientBase = class _ClientBase extends EventEmitter {
       "twitter"
     );
 
-    elizaLogger4.log("🔄 Saving new tweets...");
+    elizaLogger.log("🔄 Saving new tweets...");
     for (const tweet of tweetsToSave) {
-      elizaLogger4.log("💾 Processing tweet", tweet.id);
+      elizaLogger.log("💾 Processing tweet", tweet.id);
       const roomId = stringToUuid4(
         tweet.conversationId + "-" + this.runtime.agentId
       );
       const userId = tweet.userId === this.profile.id ? this.runtime.agentId : stringToUuid4(tweet.userId);
       
-      elizaLogger4.log("👤 Ensuring connections...");
+      elizaLogger.log("👤 Ensuring connections...");
       if (tweet.userId === this.profile.id) {
         await this.runtime.ensureConnection(
           this.runtime.agentId,
@@ -2116,7 +2116,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
         inReplyTo: tweet.inReplyToStatusId ? stringToUuid4(tweet.inReplyToStatusId) : void 0
       };
 
-      elizaLogger4.log("📝 Creating memory...");
+      elizaLogger.log("📝 Creating memory...");
       await this.runtime.messageManager.createMemory({
         id: stringToUuid4(tweet.id + "-" + this.runtime.agentId),
         userId,
@@ -2127,15 +2127,15 @@ var ClientBase = class _ClientBase extends EventEmitter {
         createdAt: tweet.timestamp * 1e3
       });
 
-      elizaLogger4.log("💾 Caching tweet...");
+      elizaLogger.log("💾 Caching tweet...");
       await this.cacheTweet(tweet);
     }
 
-    elizaLogger4.log("💾 Updating cache...");
+    elizaLogger.log("💾 Updating cache...");
     await this.cacheTimeline(timeline);
     await this.cacheMentions(mentionsAndInteractions.tweets);
 
-    elizaLogger4.log("✅ Timeline population complete");
+    elizaLogger.log("✅ Timeline population complete");
   }
   async setCookiesFromArray(cookiesArray) {
     const cookieStrings = cookiesArray.map(
@@ -2154,7 +2154,7 @@ var ClientBase = class _ClientBase extends EventEmitter {
         }
       );
       if (recentMessage.length > 0 && recentMessage[0].content === message.content) {
-        elizaLogger4.debug("Message already saved", recentMessage[0].id);
+        elizaLogger.debug("Message already saved", recentMessage[0].id);
       } else {
         await this.runtime.messageManager.createMemory({
           ...message,
