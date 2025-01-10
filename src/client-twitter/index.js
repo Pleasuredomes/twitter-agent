@@ -950,11 +950,18 @@ var TwitterInteractionClient = class {
         return;
       }
 
+      // Get settings from environment
+      const tweetsCount = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_TWEETS_COUNT")) || 5;
+      const likeChance = parseFloat(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_LIKE_CHANCE")) || 0.4;
+      const retweetChance = parseFloat(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_RETWEET_CHANCE")) || 0.3;
+      const minDelay = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MIN_DELAY")) || 30;
+      const maxDelay = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MAX_DELAY")) || 90;
+
       for (const account of followedAccounts) {
         try {
           // Get recent tweets from the account
           const tweets = await this.client.twitterClient.v2.userTimeline(account.id, {
-            max_results: 5,
+            max_results: tweetsCount,
             "tweet.fields": ["id", "text", "public_metrics"]
           });
 
@@ -963,7 +970,7 @@ var TwitterInteractionClient = class {
           // Randomly select a tweet
           const randomTweet = tweets.data[Math.floor(Math.random() * tweets.data.length)];
           
-          // Randomly choose an interaction type (like, retweet, or reply)
+          // Randomly choose an interaction type using configured probabilities
           const interactionType = Math.random();
           let interactionData = {
             type: 'interaction',
@@ -976,16 +983,16 @@ var TwitterInteractionClient = class {
           try {
             let action, content;
             
-            if (interactionType < 0.4) {
-              // 40% chance to like
+            if (interactionType < likeChance) {
+              // Like chance (default 40%)
               action = 'like';
               content = `Like tweet from @${account.username}: "${randomTweet.text}"`;
-            } else if (interactionType < 0.7) {
-              // 30% chance to retweet
+            } else if (interactionType < (likeChance + retweetChance)) {
+              // Retweet chance (default 30%)
               action = 'retweet';
               content = `Retweet from @${account.username}: "${randomTweet.text}"`;
             } else {
-              // 30% chance to reply
+              // Reply chance (remaining probability)
               action = 'reply';
               const response = await this.runtime.generate({
                 type: "tweet_reply",
@@ -1029,14 +1036,14 @@ var TwitterInteractionClient = class {
             // Log the interaction to Google Sheet
             await this.logInteractionToSheet(interactionData);
 
+            // Add a random delay between interactions using configured values
+            await new Promise(resolve => setTimeout(resolve, Math.random() * (maxDelay - minDelay) * 1000 + minDelay * 1000));
+
           } catch (error) {
             interactionData.status = 'failed';
             await this.logInteractionToSheet(interactionData);
             elizaLogger.error(`Error queuing ${action} interaction:`, error);
           }
-
-          // Add a random delay between interactions (30-90 seconds)
-          await new Promise(resolve => setTimeout(resolve, Math.random() * 60000 + 30000));
         } catch (error) {
           elizaLogger.error(`Error interacting with account ${account.username}:`, error);
           continue;
@@ -1054,8 +1061,10 @@ var TwitterInteractionClient = class {
       } catch (error) {
         elizaLogger.error("Error in random interaction loop:", error);
       } finally {
-        // Schedule next run in 4-8 hours
-        const delay = (Math.random() * 4 + 4) * 60 * 60 * 1000;
+        // Get interval settings from environment
+        const minHours = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MIN_HOURS")) || 4;
+        const maxHours = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MAX_HOURS")) || 8;
+        const delay = (Math.random() * (maxHours - minHours) + minHours) * 60 * 60 * 1000;
         setTimeout(runRandomInteractions, delay);
       }
     };
@@ -1072,7 +1081,15 @@ var twitterEnvSchema = z.object({
   TWITTER_USERNAME: z.string().min(1, "Twitter username is required"),
   TWITTER_PASSWORD: z.string().min(1, "Twitter password is required"),
   TWITTER_EMAIL: z.string().email("Valid Twitter email is required"),
-  TWITTER_COOKIES: z.string().optional()
+  TWITTER_COOKIES: z.string().optional(),
+  // Add new settings for random interactions
+  TWITTER_RANDOM_INTERACT_MIN_HOURS: z.string().optional().transform(val => parseInt(val) || 4),
+  TWITTER_RANDOM_INTERACT_MAX_HOURS: z.string().optional().transform(val => parseInt(val) || 8),
+  TWITTER_RANDOM_INTERACT_MIN_DELAY: z.string().optional().transform(val => parseInt(val) || 30),
+  TWITTER_RANDOM_INTERACT_MAX_DELAY: z.string().optional().transform(val => parseInt(val) || 90),
+  TWITTER_RANDOM_INTERACT_TWEETS_COUNT: z.string().optional().transform(val => parseInt(val) || 5),
+  TWITTER_RANDOM_INTERACT_LIKE_CHANCE: z.string().optional().transform(val => parseFloat(val) || 0.4),
+  TWITTER_RANDOM_INTERACT_RETWEET_CHANCE: z.string().optional().transform(val => parseFloat(val) || 0.3)
 });
 async function validateTwitterConfig(runtime) {
   try {
