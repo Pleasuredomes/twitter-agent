@@ -579,18 +579,17 @@ var TwitterInteractionClient = class {
         .catch(error => elizaLogger.error("Error in interaction loop:", error))
         .finally(() => {
           // Schedule next check in 2-5 minutes
-          setTimeout(
-            handleTwitterInteractionsLoop,
-            (Math.floor(Math.random() * (5 - 2 + 1)) + 2) * 60 * 1000
-          );
+          const delay = (Math.floor(Math.random() * (5 - 2 + 1)) + 2) * 60 * 1000;
+          elizaLogger.log(`Scheduling next interaction check in ${delay/60000} minutes`);
+          setTimeout(handleTwitterInteractionsLoop, delay);
         });
     };
 
     // Start the interaction monitoring loop
     handleTwitterInteractionsLoop();
 
-    // Start the random interaction with followed accounts loop
-    this.startRandomInteractionLoop();
+    // Start the random interaction with followed accounts loop immediately
+    await this.startRandomInteractionLoop();
     
     elizaLogger.log("✅ Interaction monitoring service started");
   }
@@ -1106,22 +1105,28 @@ var TwitterInteractionClient = class {
   }
 
   async startRandomInteractionLoop() {
+    elizaLogger.log("Starting random interaction loop...");
+    
     const runRandomInteractions = async () => {
       try {
+        elizaLogger.log("Running random interactions cycle");
         await this.randomInteractWithFollowed();
       } catch (error) {
         elizaLogger.error("Error in random interaction loop:", error);
       } finally {
         // Get interval settings from environment
-        const minHours = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MIN_HOURS")) || 4;
-        const maxHours = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MAX_HOURS")) || 8;
+        const minHours = parseFloat(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MIN_HOURS")) || 4;
+        const maxHours = parseFloat(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MAX_HOURS")) || 8;
         const delay = (Math.random() * (maxHours - minHours) + minHours) * 60 * 60 * 1000;
+        
+        elizaLogger.log(`Scheduling next random interactions in ${(delay/3600000).toFixed(2)} hours`);
         setTimeout(runRandomInteractions, delay);
       }
     };
 
-    // Start the loop
-    runRandomInteractions();
+    // Start the loop immediately
+    elizaLogger.log("Running first random interactions cycle immediately");
+    await runRandomInteractions();
   }
 };
 
