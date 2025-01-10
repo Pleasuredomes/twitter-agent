@@ -994,7 +994,8 @@ var TwitterInteractionClient = class {
       elizaLogger.log("Got profile:", { id: profile.id, username: profile.username });
       
       const following = await this.client.twitterClient.v2.following(profile.id, {
-        max_results: 100 // Increase max results
+        max_results: 100, // Increase max results
+        "user.fields": ["id", "name", "username", "description"] // Add more fields
       });
       
       if (!following.data || following.data.length === 0) {
@@ -1002,10 +1003,19 @@ var TwitterInteractionClient = class {
         return [];
       }
       
-      elizaLogger.log(`Found ${following.data.length} followed accounts`);
+      // Log each followed account
+      elizaLogger.log("Found followed accounts:");
+      following.data.forEach(account => {
+        elizaLogger.log(`- @${account.username} (${account.name})`);
+      });
+      
+      elizaLogger.log(`Total followed accounts: ${following.data.length}`);
       return following.data;
     } catch (error) {
       elizaLogger.error("Error fetching followed accounts:", error);
+      if (error.response) {
+        elizaLogger.error("API Response:", error.response.data);
+      }
       return [];
     }
   }
@@ -1036,8 +1046,18 @@ var TwitterInteractionClient = class {
         maxDelay
       });
 
-      for (const account of followedAccounts) {
+      // Randomly shuffle the accounts to interact with random ones each time
+      const shuffledAccounts = followedAccounts.sort(() => Math.random() - 0.5);
+      // Take only first 5 accounts per cycle to avoid too many interactions
+      const accountsToInteract = shuffledAccounts.slice(0, 5);
+      elizaLogger.log(`Selected ${accountsToInteract.length} accounts for this interaction cycle:`);
+      accountsToInteract.forEach(account => {
+        elizaLogger.log(`- Will interact with @${account.username}`);
+      });
+
+      for (const account of accountsToInteract) {
         try {
+          elizaLogger.log(`\n👤 Processing account @${account.username}:`);
           elizaLogger.log(`Fetching recent tweets for account @${account.username}`);
           // Get recent tweets from the account
           const tweets = await this.client.twitterClient.v2.userTimeline(account.id, {
@@ -1051,6 +1071,11 @@ var TwitterInteractionClient = class {
             continue;
           }
           elizaLogger.log(`Found ${tweets.data.length} tweets from @${account.username}`);
+          
+          // Log the tweets we found
+          tweets.data.forEach((tweet, index) => {
+            elizaLogger.log(`  Tweet ${index + 1}: "${tweet.text.substring(0, 50)}..."`);
+          });
 
           // Randomly select a tweet
           const randomTweet = tweets.data[Math.floor(Math.random() * tweets.data.length)];
