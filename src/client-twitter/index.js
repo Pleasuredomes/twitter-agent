@@ -613,10 +613,51 @@ var TwitterInteractionClient = class {
       // Process each tweet candidate
       for (const tweet of tweetCandidates) {
         try {
-          // Queue for approval
+          // Build conversation thread for context
+          const thread = await this.buildConversationThread(tweet);
+          
+          // Generate response using the agent's runtime
+          const state = await this.runtime.composeState(
+            {
+              userId: stringToUuid("twitter_user_" + tweet.userId),
+              roomId: stringToUuid("twitter_room_" + tweet.conversationId),
+              agentId: this.runtime.agentId,
+              content: {
+                text: tweet.text,
+                source: "twitter",
+                url: tweet.permanentUrl
+              }
+            },
+            {
+              twitterUserName: this.client.profile.username,
+              currentPost: tweet.text,
+              formattedConversation: thread.map(t => 
+                `@${t.username}: ${t.text}`
+              ).join('\n\n')
+            }
+          );
+
+          const context = composeContext({
+            state,
+            template: twitterMessageHandlerTemplate
+          });
+
+          elizaLogger.log("Generating response to tweet:", tweet.id);
+          const response = await generateText({
+            runtime: this.runtime,
+            context,
+            modelClass: ModelClass.SMALL
+          });
+
+          if (!response) {
+            elizaLogger.error("No response generated for tweet:", tweet.id);
+            continue;
+          }
+
+          // Queue for approval with the generated response
           const result = await this.webhookHandler.queueForApproval(
             {
-              text: "",  // Will be filled by the agent
+              text: response.trim(),
               action: "NONE"
             },
             "mention",
@@ -637,7 +678,8 @@ var TwitterInteractionClient = class {
 
           elizaLogger.log("Queued mention for approval:", {
             tweetId: tweet.id,
-            approvalId: result.approvalId
+            approvalId: result.approvalId,
+            response: response.trim()
           });
         } catch (error) {
           elizaLogger.error("Error processing tweet:", {
@@ -773,16 +815,25 @@ var TwitterInteractionClient = class {
             case 'interaction':
               switch (memory.content.action) {
                 case 'like':
-                  await this.client.twitterClient.v2.like(this.client.profile.id, metadata.tweetId);
+                  result = await this.client.twitterClient.v2.like(
+                    this.client.profile.id, 
+                    metadata.tweetId
+                  );
                   elizaLogger.log(`Liked tweet ${metadata.tweetId}`);
                   break;
                 case 'retweet':
-                  await this.client.twitterClient.v2.retweet(this.client.profile.id, metadata.tweetId);
+                  result = await this.client.twitterClient.v2.retweet(
+                    this.client.profile.id, 
+                    metadata.tweetId
+                  );
                   elizaLogger.log(`Retweeted tweet ${metadata.tweetId}`);
                   break;
                 case 'reply':
                   const replyText = modifiedContent || memory.content.text;
-                  result = await this.client.twitterClient.v2.reply(replyText, metadata.tweetId);
+                  result = await this.client.twitterClient.v2.reply(
+                    replyText,
+                    metadata.tweetId
+                  );
                   elizaLogger.log(`Replied to tweet ${metadata.tweetId}`);
                   break;
               }
@@ -791,8 +842,8 @@ var TwitterInteractionClient = class {
             case 'post':
               // Handle regular posts
               const postContent = modifiedContent || memory.content.text;
-              result = await this.client.twitterClient.sendTweet(postContent);
-              elizaLogger.log('Posted tweet:', result.id);
+              result = await this.client.twitterClient.v2.tweet(postContent);
+              elizaLogger.log('Posted tweet:', result.data.id);
               break;
 
             case 'mention':
@@ -802,7 +853,7 @@ var TwitterInteractionClient = class {
                 mentionContent,
                 metadata.tweet_id
               );
-              elizaLogger.log('Posted reply:', result.id);
+              elizaLogger.log('Posted reply:', result.data.id);
               break;
           }
 
@@ -813,7 +864,7 @@ var TwitterInteractionClient = class {
               ...memory.content,
               status: 'success',
               modifiedContent: modifiedContent || undefined,
-              tweetId: result?.id
+              tweetId: result?.data?.id
             }
           });
 
@@ -821,7 +872,7 @@ var TwitterInteractionClient = class {
           await this.webhookHandler.updateApprovalStatus(
             approvalId,
             'approved',
-            result?.id,
+            result?.data?.id,
             ''
           );
 
