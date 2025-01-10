@@ -588,8 +588,14 @@ var TwitterInteractionClient = class {
     // Start the interaction monitoring loop
     handleTwitterInteractionsLoop();
 
-    // Start the random interaction with followed accounts loop immediately
-    await this.startRandomInteractionLoop();
+    // Start the random interaction with followed accounts loop
+    elizaLogger.log("🔄 Starting random interaction loop...");
+    try {
+      await this.startRandomInteractionLoop();
+      elizaLogger.log("✅ Random interaction loop started successfully");
+    } catch (error) {
+      elizaLogger.error("❌ Failed to start random interaction loop:", error);
+    }
     
     elizaLogger.log("✅ Interaction monitoring service started");
   }
@@ -983,9 +989,21 @@ var TwitterInteractionClient = class {
 
   async getFollowedAccounts() {
     try {
+      elizaLogger.log("Fetching followed accounts...");
       const profile = await this.client.fetchProfile(this.runtime.getSetting("TWITTER_USERNAME"));
-      const following = await this.client.twitterClient.v2.following(profile.id);
-      return following.data || [];
+      elizaLogger.log("Got profile:", { id: profile.id, username: profile.username });
+      
+      const following = await this.client.twitterClient.v2.following(profile.id, {
+        max_results: 100 // Increase max results
+      });
+      
+      if (!following.data || following.data.length === 0) {
+        elizaLogger.log("No followed accounts found");
+        return [];
+      }
+      
+      elizaLogger.log(`Found ${following.data.length} followed accounts`);
+      return following.data;
     } catch (error) {
       elizaLogger.error("Error fetching followed accounts:", error);
       return [];
@@ -994,11 +1012,14 @@ var TwitterInteractionClient = class {
 
   async randomInteractWithFollowed() {
     try {
+      elizaLogger.log("Starting random interactions with followed accounts");
       const followedAccounts = await this.getFollowedAccounts();
+      
       if (!followedAccounts.length) {
-        elizaLogger.log("No followed accounts found");
+        elizaLogger.log("No followed accounts found, skipping interactions");
         return;
       }
+      elizaLogger.log(`Found ${followedAccounts.length} accounts to potentially interact with`);
 
       // Get settings from environment
       const tweetsCount = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_TWEETS_COUNT")) || 5;
@@ -1007,18 +1028,36 @@ var TwitterInteractionClient = class {
       const minDelay = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MIN_DELAY")) || 30;
       const maxDelay = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_MAX_DELAY")) || 90;
 
+      elizaLogger.log("Using interaction settings:", {
+        tweetsCount,
+        likeChance,
+        retweetChance,
+        minDelay,
+        maxDelay
+      });
+
       for (const account of followedAccounts) {
         try {
+          elizaLogger.log(`Fetching recent tweets for account @${account.username}`);
           // Get recent tweets from the account
           const tweets = await this.client.twitterClient.v2.userTimeline(account.id, {
             max_results: tweetsCount,
-            "tweet.fields": ["id", "text", "public_metrics"]
+            exclude: ['retweets', 'replies'],
+            "tweet.fields": ["id", "text", "public_metrics", "created_at"]
           });
 
-          if (!tweets.data?.length) continue;
+          if (!tweets.data?.length) {
+            elizaLogger.log(`No tweets found for @${account.username}, skipping`);
+            continue;
+          }
+          elizaLogger.log(`Found ${tweets.data.length} tweets from @${account.username}`);
 
           // Randomly select a tweet
           const randomTweet = tweets.data[Math.floor(Math.random() * tweets.data.length)];
+          elizaLogger.log(`Selected tweet for interaction:`, {
+            id: randomTweet.id,
+            text: randomTweet.text.substring(0, 50) + '...'
+          });
           
           // Randomly choose an interaction type using configured probabilities
           const interactionType = Math.random();
@@ -1037,10 +1076,12 @@ var TwitterInteractionClient = class {
               // Like chance (default 40%)
               action = 'like';
               content = `Like tweet from @${account.username}: "${randomTweet.text}"`;
+              elizaLogger.log(`Chose to like tweet from @${account.username}`);
             } else if (interactionType < (likeChance + retweetChance)) {
               // Retweet chance (default 30%)
               action = 'retweet';
               content = `Retweet from @${account.username}: "${randomTweet.text}"`;
+              elizaLogger.log(`Chose to retweet from @${account.username}`);
             } else {
               // Reply chance (remaining probability)
               action = 'reply';
@@ -1050,11 +1091,13 @@ var TwitterInteractionClient = class {
                 context: randomTweet.text
               });
               content = response;
+              elizaLogger.log(`Chose to reply to @${account.username}`);
             }
 
             interactionData.action = action;
             
             // Queue for approval
+            elizaLogger.log(`Queueing ${action} interaction for approval`);
             const result = await this.webhookHandler.queueForApproval(
               {
                 text: content,
@@ -1080,19 +1123,23 @@ var TwitterInteractionClient = class {
             if (result) {
               interactionData.status = 'pending_approval';
               interactionData.approvalId = result.approvalId;
-              elizaLogger.log(`Queued ${action} interaction for approval with ID: ${result.approvalId}`);
+              elizaLogger.log(`Successfully queued ${action} interaction for approval with ID: ${result.approvalId}`);
+            } else {
+              elizaLogger.log(`Failed to queue ${action} interaction for approval`);
             }
 
             // Log the interaction to Google Sheet
             await this.logInteractionToSheet(interactionData);
 
             // Add a random delay between interactions using configured values
-            await new Promise(resolve => setTimeout(resolve, Math.random() * (maxDelay - minDelay) * 1000 + minDelay * 1000));
+            const delay = Math.random() * (maxDelay - minDelay) * 1000 + minDelay * 1000;
+            elizaLogger.log(`Waiting ${(delay/1000).toFixed(1)} seconds before next interaction`);
+            await new Promise(resolve => setTimeout(resolve, delay));
 
           } catch (error) {
             interactionData.status = 'failed';
             await this.logInteractionToSheet(interactionData);
-            elizaLogger.error(`Error queuing ${action} interaction:`, error);
+            elizaLogger.error(`Error queuing ${interactionData.action} interaction:`, error);
           }
         } catch (error) {
           elizaLogger.error(`Error interacting with account ${account.username}:`, error);
