@@ -993,62 +993,31 @@ var TwitterInteractionClient = class {
       const profile = await this.client.fetchProfile(this.runtime.getSetting("TWITTER_USERNAME"));
       elizaLogger.log("Got profile:", { id: profile.id, username: profile.username });
       
-      // First try to get followed accounts directly from Twitter client
-      let following = await this.client.twitterClient.v2.following(profile.id, {
-        max_results: 100,
-        "user.fields": ["id", "name", "username", "description"]
-      });
+      // Use the direct client method
+      const following = await this.client.twitterClient.getFollowing(profile.id);
       
-      // If that fails, try the alternative method
-      if (!following?.data || following.data.length === 0) {
-        elizaLogger.log("First method failed, trying alternative method to fetch followed accounts...");
-        following = await this.client.twitterClient.getFollowing(profile.id);
-        
-        if (following?.length > 0) {
-          // Convert to expected format
-          following = {
-            data: following.map(user => ({
-              id: user.userId,
-              name: user.name,
-              username: user.username,
-              description: user.description
-            }))
-          };
-        }
-      }
-      
-      if (!following?.data || following.data.length === 0) {
-        elizaLogger.log("No followed accounts found using either method");
+      if (!following || following.length === 0) {
+        elizaLogger.log("No followed accounts found");
         return [];
       }
       
       // Log each followed account
       elizaLogger.log("Found followed accounts:");
-      following.data.forEach(account => {
+      following.forEach(account => {
         elizaLogger.log(`- @${account.username} (${account.name})`);
       });
       
-      elizaLogger.log(`Total followed accounts: ${following.data.length}`);
-      return following.data;
+      elizaLogger.log(`Total followed accounts: ${following.length}`);
+      return following.map(user => ({
+        id: user.userId,
+        name: user.name,
+        username: user.username,
+        description: user.description
+      }));
     } catch (error) {
       elizaLogger.error("Error fetching followed accounts:", error);
       if (error.response) {
         elizaLogger.error("API Response:", error.response.data);
-      }
-      // Try one last time with a simpler method
-      try {
-        elizaLogger.log("Trying final fallback method...");
-        const simpleFollowing = await this.client.twitterClient.getFollowing(profile.id);
-        if (simpleFollowing?.length > 0) {
-          elizaLogger.log(`Found ${simpleFollowing.length} accounts using fallback method`);
-          return simpleFollowing.map(user => ({
-            id: user.userId,
-            name: user.name,
-            username: user.username
-          }));
-        }
-      } catch (fallbackError) {
-        elizaLogger.error("Fallback method also failed:", fallbackError);
       }
       return [];
     }
