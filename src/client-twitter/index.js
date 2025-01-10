@@ -790,18 +790,16 @@ var TwitterInteractionClient = class {
     return thread;
   }
 
-  // Add method to handle approval responses
+  // Modify handleApprovalResponse to handle all types of approvals
   async handleApprovalResponse(approvalId, approved, modifiedContent = null, reason = '') {
     try {
-      elizaLogger.log("🔄 Processing approval response:", {
+      elizaLogger.log("Processing approval response:", {
         approvalId,
         approved,
-        hasModifiedContent: !!modifiedContent,
-        reason
+        hasModifiedContent: !!modifiedContent
       });
 
       // Get the memory associated with this approval
-      elizaLogger.log("🔍 Looking up memory for approval...");
       const memories = await this.runtime.messageManager.getMemoriesByQuery({
         agentId: this.runtime.agentId,
         query: {
@@ -810,86 +808,122 @@ var TwitterInteractionClient = class {
       });
 
       if (!memories || memories.length === 0) {
-        elizaLogger.error('❌ No memory found for approval:', approvalId);
+        elizaLogger.error('No memory found for approval:', approvalId);
         return;
       }
 
       const memory = memories[0];
-      elizaLogger.log("✅ Found memory:", {
-        id: memory.id,
-        content: memory.content,
-        roomId: memory.roomId
-      });
+      const metadata = memory.content.metadata || {};
+      const type = memory.content.type || 'post'; // Default to post for backward compatibility
 
       if (approved) {
-        // Send the approved tweet to Twitter
-        const tweetContent = typeof modifiedContent === 'string' ? modifiedContent : modifiedContent?.text || memory.content.text;
-        
-        elizaLogger.log("📝 Preparing to post tweet:", {
-          content: tweetContent,
-          inReplyTo: memory.content.inReplyTo
-        });
-
         try {
-          elizaLogger.log("🔄 Making Twitter API call...");
-          const result = await this.client.twitterClient.sendTweet(
-            tweetContent,
-            memory.content.inReplyTo
-          );
-          elizaLogger.log("✅ Twitter API response:", result);
+          let result;
+          
+          switch (type) {
+            case 'interaction':
+              switch (memory.content.action) {
+                case 'like':
+                  await this.client.twitterClient.v2.like(this.client.profile.id, metadata.tweetId);
+                  elizaLogger.log(`Liked tweet ${metadata.tweetId}`);
+                  break;
+                case 'retweet':
+                  await this.client.twitterClient.v2.retweet(this.client.profile.id, metadata.tweetId);
+                  elizaLogger.log(`Retweeted tweet ${metadata.tweetId}`);
+                  break;
+                case 'reply':
+                  const replyText = modifiedContent || memory.content.text;
+                  result = await this.client.twitterClient.v2.reply(replyText, metadata.tweetId);
+                  elizaLogger.log(`Replied to tweet ${metadata.tweetId}`);
+                  break;
+              }
+              break;
 
-          // Update memory with sent status and Twitter response
-          elizaLogger.log("💾 Updating memory with success status...");
+            case 'post':
+              // Handle regular posts
+              const postContent = modifiedContent || memory.content.text;
+              result = await this.client.twitterClient.sendTweet(postContent);
+              elizaLogger.log('Posted tweet:', result.id);
+              break;
+
+            case 'mention':
+              // Handle mentions/replies
+              const mentionContent = modifiedContent || memory.content.text;
+              result = await this.client.twitterClient.v2.reply(
+                mentionContent,
+                metadata.tweet_id
+              );
+              elizaLogger.log('Posted reply:', result.id);
+              break;
+          }
+
+          // Update memory with success status
           await this.runtime.messageManager.updateMemory({
             ...memory,
             content: {
               ...memory.content,
-              status: 'sent',
-              twitterResponse: result,
-              modifiedText: tweetContent !== memory.content.text ? tweetContent : undefined
+              status: 'success',
+              modifiedContent: modifiedContent || undefined,
+              tweetId: result?.id
             }
           });
 
-          elizaLogger.log('✅ Successfully sent approved tweet:', {
+          // Update approval status in sheet
+          await this.webhookHandler.updateApprovalStatus(
             approvalId,
-            tweetId: result.id,
-            text: tweetContent
-          });
+            'approved',
+            result?.id,
+            ''
+          );
+
+          // Log the successful interaction if it's an interaction type
+          if (type === 'interaction') {
+            await this.logInteractionToSheet({
+              type: 'interaction',
+              targetUsername: metadata.targetUsername,
+              tweetId: metadata.tweetId,
+              tweetText: metadata.originalTweet,
+              action: memory.content.action,
+              response: modifiedContent || memory.content.text,
+              status: 'success'
+            });
+          }
+
         } catch (error) {
-          elizaLogger.error('❌ Error sending tweet to Twitter:', {
-            error: {
-              name: error.name,
-              message: error.message,
-              stack: error.stack,
-              code: error.code,
-              response: error.response?.data,
-              status: error.response?.status
-            },
-            tweet: {
-              content: tweetContent,
-              length: tweetContent.length,
-              inReplyTo: memory.content.inReplyTo
-            }
-          });
+          elizaLogger.error(`Error executing approved ${type}:`, error);
           
           // Update memory with error status
-          elizaLogger.log("💾 Updating memory with error status...");
           await this.runtime.messageManager.updateMemory({
             ...memory,
             content: {
               ...memory.content,
               status: 'error',
-              error: {
-                message: error.message,
-                code: error.code,
-                response: error.response?.data
-              }
+              error: error.message
             }
           });
+
+          // Update approval status in sheet
+          await this.webhookHandler.updateApprovalStatus(
+            approvalId,
+            'error',
+            '',
+            error.message
+          );
+
+          if (type === 'interaction') {
+            await this.logInteractionToSheet({
+              type: 'interaction',
+              targetUsername: metadata.targetUsername,
+              tweetId: metadata.tweetId,
+              tweetText: metadata.originalTweet,
+              action: memory.content.action,
+              status: 'failed',
+              error: error.message
+            });
+          }
         }
       } else {
-        // Update memory with rejected status
-        elizaLogger.log("💾 Updating memory with rejected status...");
+        // Handle rejection
         await this.runtime.messageManager.updateMemory({
           ...memory,
           content: {
@@ -899,25 +933,168 @@ var TwitterInteractionClient = class {
           }
         });
 
-        elizaLogger.log('ℹ️ Tweet rejected:', {
+        // Update approval status in sheet
+        await this.webhookHandler.updateApprovalStatus(
           approvalId,
+          'rejected',
+          '',
           reason
-        });
+        );
+
+        if (type === 'interaction') {
+          await this.logInteractionToSheet({
+            type: 'interaction',
+            targetUsername: metadata.targetUsername,
+            tweetId: metadata.tweetId,
+            tweetText: metadata.originalTweet,
+            action: memory.content.action,
+            status: 'rejected',
+            reason
+          });
+        }
       }
     } catch (error) {
-      elizaLogger.error('❌ Error in approval response handler:', {
-        error: {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        },
-        context: {
-          approvalId,
-          approved,
-          hasModifiedContent: !!modifiedContent
-        }
-      });
+      elizaLogger.error('Error handling approval response:', error);
       throw error;
+    }
+  }
+
+  async logInteractionToSheet(interaction) {
+    try {
+      const timestamp = new Date().toISOString();
+      const rowData = [
+        timestamp,
+        interaction.type,
+        interaction.targetUsername,
+        interaction.tweetId,
+        interaction.tweetText?.slice(0, 100), // Truncate long tweets
+        interaction.action,
+        interaction.response || '',
+        interaction.status,
+        interaction.reason || '',
+        interaction.error || ''
+      ];
+
+      await this.webhookHandler.appendToSheet('Interactions', rowData);
+      elizaLogger.log(`Logged interaction to sheet: ${interaction.type} with ${interaction.targetUsername}`);
+    } catch (error) {
+      elizaLogger.error('Error logging interaction to sheet:', error);
+    }
+  }
+
+  async getFollowedAccounts() {
+    try {
+      const profile = await this.client.fetchProfile(this.runtime.getSetting("TWITTER_USERNAME"));
+      const following = await this.client.twitterClient.v2.following(profile.id);
+      return following.data || [];
+    } catch (error) {
+      elizaLogger.error("Error fetching followed accounts:", error);
+      return [];
+    }
+  }
+
+  async randomInteractWithFollowed() {
+    try {
+      const followedAccounts = await this.getFollowedAccounts();
+      if (!followedAccounts.length) {
+        elizaLogger.log("No followed accounts found");
+        return;
+      }
+
+      for (const account of followedAccounts) {
+        try {
+          // Get recent tweets from the account
+          const tweets = await this.client.twitterClient.v2.userTimeline(account.id, {
+            max_results: 5,
+            "tweet.fields": ["id", "text", "public_metrics"]
+          });
+
+          if (!tweets.data?.length) continue;
+
+          // Randomly select a tweet
+          const randomTweet = tweets.data[Math.floor(Math.random() * tweets.data.length)];
+          
+          // Randomly choose an interaction type (like, retweet, or reply)
+          const interactionType = Math.random();
+          let interactionData = {
+            type: 'interaction',
+            targetUsername: account.username,
+            tweetId: randomTweet.id,
+            tweetText: randomTweet.text,
+            status: 'pending'
+          };
+          
+          try {
+            let action, content;
+            
+            if (interactionType < 0.4) {
+              // 40% chance to like
+              action = 'like';
+              content = `Like tweet from @${account.username}: "${randomTweet.text}"`;
+            } else if (interactionType < 0.7) {
+              // 30% chance to retweet
+              action = 'retweet';
+              content = `Retweet from @${account.username}: "${randomTweet.text}"`;
+            } else {
+              // 30% chance to reply
+              action = 'reply';
+              const response = await this.runtime.generate({
+                type: "tweet_reply",
+                maxLength: 240,
+                context: randomTweet.text
+              });
+              content = response;
+            }
+
+            interactionData.action = action;
+            
+            // Queue for approval
+            const result = await this.webhookHandler.queueForApproval(
+              {
+                text: content,
+                action: action,
+                metadata: {
+                  tweetId: randomTweet.id,
+                  targetUsername: account.username,
+                  originalTweet: randomTweet.text
+                }
+              },
+              'interaction',
+              {
+                interaction_type: action,
+                target_username: account.username,
+                tweet_id: randomTweet.id,
+                tweet_text: randomTweet.text,
+                tweet_url: `https://twitter.com/${account.username}/status/${randomTweet.id}`,
+                agent_name: this.runtime.character.name,
+                agent_username: this.runtime.getSetting("TWITTER_USERNAME")
+              }
+            );
+
+            if (result) {
+              interactionData.status = 'pending_approval';
+              interactionData.approvalId = result.approvalId;
+              elizaLogger.log(`Queued ${action} interaction for approval with ID: ${result.approvalId}`);
+            }
+
+            // Log the interaction to Google Sheet
+            await this.logInteractionToSheet(interactionData);
+
+          } catch (error) {
+            interactionData.status = 'failed';
+            await this.logInteractionToSheet(interactionData);
+            elizaLogger.error(`Error queuing ${action} interaction:`, error);
+          }
+
+          // Add a random delay between interactions (30-90 seconds)
+          await new Promise(resolve => setTimeout(resolve, Math.random() * 60000 + 30000));
+        } catch (error) {
+          elizaLogger.error(`Error interacting with account ${account.username}:`, error);
+          continue;
+        }
+      }
+    } catch (error) {
+      elizaLogger.error("Error in random interactions:", error);
     }
   }
 };
