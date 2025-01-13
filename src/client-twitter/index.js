@@ -1052,16 +1052,28 @@ var TwitterInteractionClient = class {
       }
       elizaLogger.log(`Found ${timeline.length} timeline tweets`);
 
+      // Debug log each tweet in timeline before filtering
+      elizaLogger.log("DEBUG: Showing all timeline tweets before filtering:");
+      timeline.forEach((tweet, index) => {
+        elizaLogger.log(`Tweet ${index + 1}:`, {
+          id: tweet.id,
+          username: tweet.username,
+          userId: tweet.userId,
+          text: tweet.text?.substring(0, 50) + "...",
+          raw: JSON.stringify(tweet, null, 2)
+        });
+      });
+
       // Filter out our own tweets and randomly select some tweets to interact with
       elizaLogger.log("Filtering timeline tweets...");
       elizaLogger.log(`Our profile ID: ${this.client.profile.id}`);
       
       // Log full tweet structure for debugging
-      elizaLogger.log("DEBUG: Examining tweet structure of first tweet:", JSON.stringify(timeline[0], null, 2));
+      elizaLogger.log("DEBUG: First tweet raw data:", JSON.stringify(timeline[0], null, 2));
       
       const otherUsersTweets = timeline.filter(tweet => {
-        const isOwnTweet = tweet.author_id === this.client.profile.id;
-        elizaLogger.log(`Tweet ${tweet.id} - author_id: ${tweet.author_id}, username: ${tweet.username}`);
+        const isOwnTweet = tweet.username === this.client.profile.username;
+        elizaLogger.log(`Tweet ${tweet.id} - username: ${tweet.username} vs our username: ${this.client.profile.username} - isOwnTweet: ${isOwnTweet}`);
         return !isOwnTweet;
       });
       
