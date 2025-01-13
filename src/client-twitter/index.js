@@ -1052,46 +1052,24 @@ var TwitterInteractionClient = class {
       }
       elizaLogger.log(`Found ${timeline.length} timeline tweets`);
 
-      // Debug log each tweet in timeline before filtering
-      elizaLogger.log("DEBUG: Showing all timeline tweets before filtering:");
-      timeline.forEach((tweet, index) => {
-        elizaLogger.log(`Tweet ${index + 1}:`, {
-          id: tweet.id,
-          username: tweet.username,
-          userId: tweet.userId,
-          text: tweet.text?.substring(0, 50) + "...",
-          raw: JSON.stringify(tweet, null, 2)
-        });
-      });
-
       // Filter out our own tweets and randomly select some tweets to interact with
       elizaLogger.log("Filtering timeline tweets...");
-      elizaLogger.log(`Our profile ID: ${this.client.profile.id}`);
-      
-      // Log full tweet structure for debugging
-      elizaLogger.log("DEBUG: First tweet raw data:", JSON.stringify(timeline[0], null, 2));
+      elizaLogger.log(`Our username: ${this.client.profile.username}`);
       
       const otherUsersTweets = timeline.filter(tweet => {
         const isOwnTweet = tweet.username === this.client.profile.username;
-        elizaLogger.log(`Tweet ${tweet.id} - username: ${tweet.username} vs our username: ${this.client.profile.username} - isOwnTweet: ${isOwnTweet}`);
+        elizaLogger.log(`Tweet ${tweet.id} by @${tweet.username} - isOwnTweet: ${isOwnTweet}`);
         return !isOwnTweet;
       });
       
       elizaLogger.log(`After filtering, found ${otherUsersTweets.length} tweets from other users`);
-      
-      if (otherUsersTweets.length === 0) {
-        elizaLogger.log("DEBUG: Showing all timeline tweets for inspection:");
-        timeline.forEach(tweet => {
-          elizaLogger.log(`- Tweet ${tweet.id}: author_id=${tweet.author_id}, username=@${tweet.username}, text="${tweet.text.substring(0, 50)}..."`);
-        });
-      }
       
       const shuffledTweets = otherUsersTweets.sort(() => Math.random() - 0.5);
       const tweetsToInteract = shuffledTweets.slice(0, Math.min(5, shuffledTweets.length));
       
       elizaLogger.log(`Selected ${tweetsToInteract.length} tweets for interaction`);
       tweetsToInteract.forEach(tweet => {
-        elizaLogger.log(`Selected tweet: ID ${tweet.id} by @${tweet.username}: "${tweet.text.substring(0, 50)}..."`);
+        elizaLogger.log(`Selected tweet: ID ${tweet.id} by @${tweet.username}: "${tweet.text?.substring(0, 50)}..."`);
       });
 
       for (const tweet of tweetsToInteract) {
@@ -1449,11 +1427,41 @@ var ClientBase = class _ClientBase extends EventEmitter {
   }
   async fetchHomeTimeline(count) {
     elizaLogger.debug("fetching home timeline");
-    const homeTimeline = await this.twitterClient.getUserTweets(
-      this.profile.id,
-      count
-    );
-    return homeTimeline.tweets;
+    const homeTimeline = await this.twitterClient.fetchHomeTimeline(count, []);
+    elizaLogger.debug(homeTimeline, { depth: Infinity });
+    
+    const processedTimeline = homeTimeline
+      .filter((t) => t.__typename !== "TweetWithVisibilityResults")
+      .map((tweet) => {
+        const obj = {
+          id: tweet.id,
+          name: tweet.name ?? tweet?.user_results?.result?.legacy.name,
+          username: tweet.username ?? tweet.core?.user_results?.result?.legacy.screen_name,
+          text: tweet.text ?? tweet.legacy?.full_text,
+          inReplyToStatusId: tweet.inReplyToStatusId ?? tweet.legacy?.in_reply_to_status_id_str ?? null,
+          timestamp: new Date(tweet.legacy?.created_at).getTime() / 1000,
+          createdAt: tweet.createdAt ?? tweet.legacy?.created_at ?? tweet.core?.user_results?.result?.legacy.created_at,
+          userId: tweet.userId ?? tweet.legacy?.user_id_str,
+          conversationId: tweet.conversationId ?? tweet.legacy?.conversation_id_str,
+          permanentUrl: `https://x.com/${tweet.core?.user_results?.result?.legacy?.screen_name}/status/${tweet.rest_id}`,
+          hashtags: tweet.hashtags ?? tweet.legacy?.entities.hashtags,
+          mentions: tweet.mentions ?? tweet.legacy?.entities.user_mentions,
+          photos: tweet.legacy?.entities?.media?.filter(
+            (media) => media.type === "photo"
+          ).map((media) => ({
+            id: media.id_str,
+            url: media.media_url_https,
+            alt_text: media.alt_text
+          })) || [],
+          thread: tweet.thread || [],
+          urls: tweet.urls ?? tweet.legacy?.entities.urls,
+          videos: tweet.videos ?? tweet.legacy?.entities.media?.filter(
+            (media) => media.type === "video"
+          ) ?? []
+        };
+        return obj;
+      });
+    return processedTimeline;
   }
   async fetchSearchTweets(query, maxTweets, searchMode, cursor) {
     try {
