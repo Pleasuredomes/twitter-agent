@@ -1056,10 +1056,12 @@ var TwitterInteractionClient = class {
       elizaLogger.log("Filtering timeline tweets...");
       elizaLogger.log(`Our profile ID: ${this.client.profile.id}`);
       
+      // Log full tweet structure for debugging
+      elizaLogger.log("DEBUG: Examining tweet structure of first tweet:", JSON.stringify(timeline[0], null, 2));
+      
       const otherUsersTweets = timeline.filter(tweet => {
-        const isOwnTweet = String(tweet.userId) === String(this.client.profile.id);
-        elizaLogger.log(`Tweet ${tweet.id} by @${tweet.username} (${tweet.userId}) - isOwnTweet: ${isOwnTweet}`);
-        elizaLogger.log(`Comparing: tweet.userId (${typeof tweet.userId}: ${tweet.userId}) vs profile.id (${typeof this.client.profile.id}: ${this.client.profile.id})`);
+        const isOwnTweet = tweet.author_id === this.client.profile.id;
+        elizaLogger.log(`Tweet ${tweet.id} - author_id: ${tweet.author_id}, username: ${tweet.username}`);
         return !isOwnTweet;
       });
       
@@ -1068,7 +1070,7 @@ var TwitterInteractionClient = class {
       if (otherUsersTweets.length === 0) {
         elizaLogger.log("DEBUG: Showing all timeline tweets for inspection:");
         timeline.forEach(tweet => {
-          elizaLogger.log(`- Tweet ${tweet.id}: userId=${tweet.userId}, username=@${tweet.username}, text="${tweet.text.substring(0, 50)}..."`);
+          elizaLogger.log(`- Tweet ${tweet.id}: author_id=${tweet.author_id}, username=@${tweet.username}, text="${tweet.text.substring(0, 50)}..."`);
         });
       }
       
