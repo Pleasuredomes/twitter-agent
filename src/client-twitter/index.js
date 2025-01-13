@@ -1057,12 +1057,20 @@ var TwitterInteractionClient = class {
       elizaLogger.log(`Our profile ID: ${this.client.profile.id}`);
       
       const otherUsersTweets = timeline.filter(tweet => {
-        const isOwnTweet = tweet.userId === this.client.profile.id;
-        elizaLogger.log(`Tweet ${tweet.id} by @${tweet.username} (${tweet.userId}) - ${isOwnTweet ? 'our tweet' : 'other user tweet'}`);
+        const isOwnTweet = String(tweet.userId) === String(this.client.profile.id);
+        elizaLogger.log(`Tweet ${tweet.id} by @${tweet.username} (${tweet.userId}) - isOwnTweet: ${isOwnTweet}`);
+        elizaLogger.log(`Comparing: tweet.userId (${typeof tweet.userId}: ${tweet.userId}) vs profile.id (${typeof this.client.profile.id}: ${this.client.profile.id})`);
         return !isOwnTweet;
       });
       
       elizaLogger.log(`After filtering, found ${otherUsersTweets.length} tweets from other users`);
+      
+      if (otherUsersTweets.length === 0) {
+        elizaLogger.log("DEBUG: Showing all timeline tweets for inspection:");
+        timeline.forEach(tweet => {
+          elizaLogger.log(`- Tweet ${tweet.id}: userId=${tweet.userId}, username=@${tweet.username}, text="${tweet.text.substring(0, 50)}..."`);
+        });
+      }
       
       const shuffledTweets = otherUsersTweets.sort(() => Math.random() - 0.5);
       const tweetsToInteract = shuffledTweets.slice(0, Math.min(5, shuffledTweets.length));
