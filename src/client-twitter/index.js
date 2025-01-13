@@ -1025,15 +1025,8 @@ var TwitterInteractionClient = class {
 
   async randomInteractWithFollowed() {
     try {
-      elizaLogger.log("Starting random interactions with followed accounts");
-      const followedAccounts = await this.getFollowedAccounts();
+      elizaLogger.log("Starting random interactions with timeline tweets");
       
-      if (!followedAccounts.length) {
-        elizaLogger.log("No followed accounts found, skipping interactions");
-        return;
-      }
-      elizaLogger.log(`Found ${followedAccounts.length} accounts to potentially interact with`);
-
       // Get settings from environment
       const tweetsCount = parseInt(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_TWEETS_COUNT")) || 5;
       const likeChance = parseFloat(this.runtime.getSetting("TWITTER_RANDOM_INTERACT_LIKE_CHANCE")) || 0.4;
@@ -1049,51 +1042,37 @@ var TwitterInteractionClient = class {
         maxDelay
       });
 
-      // Randomly shuffle the accounts to interact with random ones each time
-      const shuffledAccounts = followedAccounts.sort(() => Math.random() - 0.5);
-      // Take only first 5 accounts per cycle to avoid too many interactions
-      const accountsToInteract = shuffledAccounts.slice(0, 5);
-      elizaLogger.log(`Selected ${accountsToInteract.length} accounts for this interaction cycle:`);
-      accountsToInteract.forEach(account => {
-        elizaLogger.log(`- Will interact with @${account.username}`);
-      });
+      // Fetch timeline tweets
+      elizaLogger.log("Fetching timeline tweets...");
+      const timeline = await this.client.fetchHomeTimeline(tweetsCount);
+      
+      if (!timeline || timeline.length === 0) {
+        elizaLogger.log("No timeline tweets found");
+        return;
+      }
+      elizaLogger.log(`Found ${timeline.length} timeline tweets`);
 
-      for (const account of accountsToInteract) {
+      // Filter out our own tweets and randomly select some tweets to interact with
+      const otherUsersTweets = timeline.filter(tweet => tweet.userId !== this.client.profile.id);
+      const shuffledTweets = otherUsersTweets.sort(() => Math.random() - 0.5);
+      const tweetsToInteract = shuffledTweets.slice(0, Math.min(5, shuffledTweets.length));
+      
+      elizaLogger.log(`Selected ${tweetsToInteract.length} tweets for interaction`);
+
+      for (const tweet of tweetsToInteract) {
         try {
-          elizaLogger.log(`\n👤 Processing account @${account.username}:`);
-          elizaLogger.log(`Fetching recent tweets for account @${account.username}`);
-          // Get recent tweets from the account
-          const tweets = await this.client.twitterClient.v2.userTimeline(account.id, {
-            max_results: tweetsCount,
-            exclude: ['retweets', 'replies'],
-            "tweet.fields": ["id", "text", "public_metrics", "created_at"]
-          });
-
-          if (!tweets.data?.length) {
-            elizaLogger.log(`No tweets found for @${account.username}, skipping`);
-            continue;
-          }
-          elizaLogger.log(`Found ${tweets.data.length} tweets from @${account.username}`);
-          
-          // Log the tweets we found
-          tweets.data.forEach((tweet, index) => {
-            elizaLogger.log(`  Tweet ${index + 1}: "${tweet.text.substring(0, 50)}..."`);
-          });
-
-          // Randomly select a tweet
-          const randomTweet = tweets.data[Math.floor(Math.random() * tweets.data.length)];
-          elizaLogger.log(`Selected tweet for interaction:`, {
-            id: randomTweet.id,
-            text: randomTweet.text.substring(0, 50) + '...'
+          elizaLogger.log(`\n👤 Processing tweet from @${tweet.username}:`, {
+            id: tweet.id,
+            text: tweet.text.substring(0, 50) + '...'
           });
           
           // Randomly choose an interaction type using configured probabilities
           const interactionType = Math.random();
           let interactionData = {
             type: 'interaction',
-            targetUsername: account.username,
-            tweetId: randomTweet.id,
-            tweetText: randomTweet.text,
+            targetUsername: tweet.username,
+            tweetId: tweet.id,
+            tweetText: tweet.text,
             status: 'pending'
           };
           
@@ -1103,23 +1082,23 @@ var TwitterInteractionClient = class {
             if (interactionType < likeChance) {
               // Like chance (default 40%)
               action = 'like';
-              content = `Like tweet from @${account.username}: "${randomTweet.text}"`;
-              elizaLogger.log(`Chose to like tweet from @${account.username}`);
+              content = `Like tweet from @${tweet.username}: "${tweet.text}"`;
+              elizaLogger.log(`Chose to like tweet from @${tweet.username}`);
             } else if (interactionType < (likeChance + retweetChance)) {
               // Retweet chance (default 30%)
               action = 'retweet';
-              content = `Retweet from @${account.username}: "${randomTweet.text}"`;
-              elizaLogger.log(`Chose to retweet from @${account.username}`);
+              content = `Retweet from @${tweet.username}: "${tweet.text}"`;
+              elizaLogger.log(`Chose to retweet from @${tweet.username}`);
             } else {
               // Reply chance (remaining probability)
               action = 'reply';
               const response = await this.runtime.generate({
                 type: "tweet_reply",
                 maxLength: 240,
-                context: randomTweet.text
+                context: tweet.text
               });
               content = response;
-              elizaLogger.log(`Chose to reply to @${account.username}`);
+              elizaLogger.log(`Chose to reply to @${tweet.username}`);
             }
 
             interactionData.action = action;
@@ -1131,18 +1110,18 @@ var TwitterInteractionClient = class {
                 text: content,
                 action: action,
                 metadata: {
-                  tweetId: randomTweet.id,
-                  targetUsername: account.username,
-                  originalTweet: randomTweet.text
+                  tweetId: tweet.id,
+                  targetUsername: tweet.username,
+                  originalTweet: tweet.text
                 }
               },
               'interaction',
               {
                 interaction_type: action,
-                target_username: account.username,
-                tweet_id: randomTweet.id,
-                tweet_text: randomTweet.text,
-                tweet_url: `https://twitter.com/${account.username}/status/${randomTweet.id}`,
+                target_username: tweet.username,
+                tweet_id: tweet.id,
+                tweet_text: tweet.text,
+                tweet_url: `https://twitter.com/${tweet.username}/status/${tweet.id}`,
                 agent_name: this.runtime.character.name,
                 agent_username: this.runtime.getSetting("TWITTER_USERNAME")
               }
@@ -1170,7 +1149,7 @@ var TwitterInteractionClient = class {
             elizaLogger.error(`Error queuing ${interactionData.action} interaction:`, error);
           }
         } catch (error) {
-          elizaLogger.error(`Error interacting with account ${account.username}:`, error);
+          elizaLogger.error(`Error processing tweet ${tweet.id}:`, error);
           continue;
         }
       }
