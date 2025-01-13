@@ -1054,10 +1054,10 @@ var TwitterInteractionClient = class {
 
       // Filter out our own tweets and randomly select some tweets to interact with
       elizaLogger.log("Filtering timeline tweets...");
-      elizaLogger.log(`Our username: ${this.client.profile.username}`);
+      elizaLogger.log(`Our username: ${this.runtime.getSetting("TWITTER_USERNAME")}`);
       
       const otherUsersTweets = timeline.filter(tweet => {
-        const isOwnTweet = tweet.username === this.client.profile.username;
+        const isOwnTweet = tweet.username?.toLowerCase() === this.runtime.getSetting("TWITTER_USERNAME").toLowerCase();
         elizaLogger.log(`Tweet ${tweet.id} by @${tweet.username} - isOwnTweet: ${isOwnTweet}`);
         return !isOwnTweet;
       });
@@ -1105,13 +1105,40 @@ var TwitterInteractionClient = class {
             } else {
               // Reply chance (remaining probability)
               action = 'reply';
-              const response = await this.runtime.generate({
-                type: "tweet_reply",
-                maxLength: 240,
-                context: tweet.text
+              
+              // Generate response using proper context
+              const state = await this.runtime.composeState(
+                {
+                  userId: stringToUuid("twitter_user_" + tweet.userId),
+                  roomId: stringToUuid("twitter_room_" + tweet.conversationId),
+                  agentId: this.runtime.agentId,
+                  content: {
+                    text: tweet.text,
+                    source: "twitter",
+                    url: tweet.permanentUrl
+                  }
+                },
+                {
+                  twitterUserName: this.client.profile.username,
+                  currentPost: tweet.text,
+                  formattedConversation: `@${tweet.username}: ${tweet.text}`
+                }
+              );
+
+              const context = composeContext({
+                state,
+                template: twitterMessageHandlerTemplate
               });
-              content = response;
-              elizaLogger.log(`Chose to reply to @${tweet.username}`);
+
+              elizaLogger.log("Generating reply to tweet:", tweet.id);
+              const response = await generateText({
+                runtime: this.runtime,
+                context,
+                modelClass: ModelClass.SMALL
+              });
+
+              content = response?.trim();
+              elizaLogger.log(`Generated reply for @${tweet.username}: "${content?.substring(0, 50)}..."`);
             }
 
             interactionData.action = action;
@@ -1433,17 +1460,18 @@ var ClientBase = class _ClientBase extends EventEmitter {
     const processedTimeline = homeTimeline
       .filter((t) => t.__typename !== "TweetWithVisibilityResults")
       .map((tweet) => {
+        const authorScreenName = tweet.core?.user_results?.result?.legacy?.screen_name;
         const obj = {
           id: tweet.id,
           name: tweet.name ?? tweet?.user_results?.result?.legacy.name,
-          username: tweet.username ?? tweet.core?.user_results?.result?.legacy.screen_name,
+          username: authorScreenName ?? tweet.username,
           text: tweet.text ?? tweet.legacy?.full_text,
           inReplyToStatusId: tweet.inReplyToStatusId ?? tweet.legacy?.in_reply_to_status_id_str ?? null,
           timestamp: new Date(tweet.legacy?.created_at).getTime() / 1000,
           createdAt: tweet.createdAt ?? tweet.legacy?.created_at ?? tweet.core?.user_results?.result?.legacy.created_at,
           userId: tweet.userId ?? tweet.legacy?.user_id_str,
           conversationId: tweet.conversationId ?? tweet.legacy?.conversation_id_str,
-          permanentUrl: `https://x.com/${tweet.core?.user_results?.result?.legacy?.screen_name}/status/${tweet.rest_id}`,
+          permanentUrl: `https://x.com/${authorScreenName}/status/${tweet.rest_id}`,
           hashtags: tweet.hashtags ?? tweet.legacy?.entities.hashtags,
           mentions: tweet.mentions ?? tweet.legacy?.entities.user_mentions,
           photos: tweet.legacy?.entities?.media?.filter(
